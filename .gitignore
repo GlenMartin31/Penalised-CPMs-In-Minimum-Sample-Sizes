@@ -1,0 +1,7 @@
+.Rproj.user
+.Rhistory
+.RData
+.Ruserdata
+
+#Ignore the 'Outputs' folder, which contains the RMarkdown file for the manuscript
+Outputs/
