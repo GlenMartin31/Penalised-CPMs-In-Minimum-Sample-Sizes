@@ -5,3 +5,13 @@
 
 #Ignore the 'Outputs' folder, which contains the RMarkdown file for the manuscript
 Outputs/
+
+#Ignore the mimic dataset
+mimic_analysis_results.RDS
+mimic_penalised_cpms_cohort.csv
+
+#Ignore manuscript folder (until published)
+Manuscript/
+
+#Ignore folder with templates for the paper
+Templates/
