@@ -1,0 +1,559 @@
+library(tidyverse)
+library(furrr)
+library(pmsampsize)
+library(glmnet)
+library(logistf)
+library(pROC)
+
+
+mimic_data <- read_csv(file = here::here("Data", "mimic_penalised_cpms_cohort.csv"), 
+                       col_names = TRUE,
+                       # Adjust data structures, as needed:
+                       col_types = cols(
+                         gender = col_factor(levels = c("M", "F")),
+                         admission_type = col_factor(levels = c("ELECTIVE", "URGENT", "EMERGENCY")),
+                         ethnicity_grouped = col_factor(levels = c("white", "black", "asian",
+                                                                   "hispanic", "other", "unknown"))
+                       ))
+
+
+####----------------------------------------------------------------------------------------
+## Data clean
+####----------------------------------------------------------------------------------------
+
+#Clean age - define a categorical version of age (not normally recommended but needed here 
+# since anyone with an age over 89 has their age adjusted by mimic team, so only know >89
+mimic_data <- mimic_data %>%
+  mutate(age_grouped = factor(ifelse(age < 30, "<30",
+                                     ifelse(age < 40, "<40",
+                                            ifelse(age < 50, "<50",
+                                                   ifelse(age < 60, "<60",
+                                                          ifelse(age < 70, "<70",
+                                                                 ifelse(age < 80, "<80", 
+                                                                        ">80")))))),
+                              levels = c("<30", "<40", "<50", "<60", "<70", "<80", ">80"))
+  )
+
+
+#####---------------------------------------------------------------------------------------
+### Simplify some categorical variables prior to modelling
+#####---------------------------------------------------------------------------------------
+
+mimic_data <- mimic_data %>%
+  mutate(admission_type = fct_recode(admission_type,
+                                     "Emergency" = "EMERGENCY", 
+                                     "Non-Emergency" = "ELECTIVE", 
+                                     "Non-Emergency" = "URGENT"),
+         ethnicity_grouped = fct_recode(ethnicity_grouped,
+                                        "white" = "white", 
+                                        "black" = "black", 
+                                        "other" = "asian",
+                                        "other" = "hispanic", 
+                                        "other" = "other", 
+                                        "unknown" = "unknown"))
+
+
+
+#####---------------------------------------------------------------------------------------
+### Create a "rate of change" for each lab variable (i.e. diff between day min and max)
+#####---------------------------------------------------------------------------------------
+
+rate_of_change_data <- mimic_data %>%
+  select(subject_id, hadm_id, icustay_id,
+         ends_with("_min"),
+         ends_with("_max")) %>%
+  #Turn into long format:
+  pivot_longer(cols = c(-subject_id, -hadm_id, -icustay_id), 
+               names_to = "labtest_quantity", 
+               values_to = "value") %>%
+  #Separate the labtest_quantity variable into separate columns based on regex.:
+  extract(labtest_quantity, 
+          into = c("Labtest", "Quantity"), 
+          "([A-Za-z]+)_([A-Za-z]+)") %>%
+  #Place the max and min values 'next to' each other for each person:
+  pivot_wider(id_cols = c("subject_id", "hadm_id", "icustay_id", "Labtest"),
+              names_from = "Quantity",
+              values_from = "value") %>%
+  #Calculate the difference between the min and max of each lab test for each person:
+  mutate("change" = max - min) %>%
+  select(-min, -max) %>%
+  #Place the different lab tests for each person back in side-by-side (wide) format:
+  pivot_wider(id_cols = c("subject_id", "hadm_id", "icustay_id"),
+              names_from = "Labtest",
+              values_from = "change") %>%
+  #Add a "_change" suffix to all lab test names (similar format to the mimic_cohort tibble):
+  rename_at(.vars = vars(-subject_id, -hadm_id, -icustay_id),
+            .funs = ~paste0(., "_change"))
+
+
+
+####----------------------------------------------------------------------------------------
+## Subset the variables and rows that we wish to use for modelling, and 
+#    add-in the change in lab tests
+####----------------------------------------------------------------------------------------
+
+Analysis_Cohort <- mimic_data %>%
+  select(-ends_with("_min"),
+         -ends_with("_max")) %>%
+  left_join(rate_of_change_data,
+            by = c("subject_id", "hadm_id", "icustay_id")) %>%
+  select(subject_id, hadm_id, icustay_id,
+         age_grouped,
+         gender,
+         admission_type,
+         ethnicity_grouped,
+         ends_with("_mean"),
+         ends_with("_change"),
+         hospital_expire_flag) %>%
+  # Consider complete case analysis on the mimic iii cohort, for simplicity of
+  #   modelling and bootstrap:
+  filter(complete.cases(.))
+
+
+
+####----------------------------------------------------------------------------------------
+## Create Table: Required Sample Size calculation  
+####----------------------------------------------------------------------------------------
+Y_prev <- mean(Analysis_Cohort$hospital_expire_flag)
+MaxR2 <- 1 - exp((2*(((Y_prev*100)*log(Y_prev)) + ((100 - (Y_prev*100))*log(1 - (Y_prev))))) / 100)
+R2_for_SampCalc <- 0.15 * MaxR2
+
+P <- ncol(model.matrix(hospital_expire_flag ~ .,
+                       data = Analysis_Cohort %>%
+                         select(hospital_expire_flag,
+                                age_grouped,
+                                gender,
+                                admission_type,
+                                ethnicity_grouped,
+                                ends_with("_mean"),
+                                ends_with("_change")))) - 1
+
+
+MIMIC_Sample_Size_Calc_Table <- as.data.frame(pmsampsize(type = "b",
+                                                         rsquared = R2_for_SampCalc,
+                                                         parameters = P,
+                                                         shrinkage = 0.9,
+                                                         prevalence = Y_prev)$results_table) %>%
+  select(Samp_size) %>%
+  rownames_to_column("Criteria") %>%
+  pivot_wider(names_from = "Criteria", values_from = "Samp_size") %>%
+  mutate("Max_Criteria" = which.max(c(`Criteria 1`, `Criteria 2`, `Criteria 3`)))
+
+
+
+
+
+
+####----------------------------------------------------------------------------------------
+## Create a function that fits all penalisation methods (for application to the
+#    mimic iii example only!). We can then call this for each bootstrap internal validation
+####----------------------------------------------------------------------------------------
+modelling_fnc <- function(Data_for_Model_Fit,
+                          Data_for_Predictions) {
+  # Inputs: Data_for_Model_Fit = a tibble that one wishes to
+  #                               use to fit/develop all of the models
+  #         Data_for_Predictions = a tibble that one wishes to 
+  #                               apply the developed models to and
+  #                               obtain predictions on (can be
+  #                               same as development data which gives 
+  #                               apprarent performance)
+  
+  if (is.list(Data_for_Model_Fit)) Data_for_Model_Fit <- bind_rows(Data_for_Model_Fit)
+  if (is.list(Data_for_Predictions)) Data_for_Predictions <- bind_rows(Data_for_Predictions)
+  
+  ## Create a design matrix of the development and validation data 
+  ##  (useful for some of the modelling steps below):
+  Dev_DM <- model.matrix(hospital_expire_flag ~ .,
+                         data = Data_for_Model_Fit %>%
+                           select(hospital_expire_flag,
+                                  age_grouped,
+                                  gender,
+                                  admission_type,
+                                  ethnicity_grouped,
+                                  ends_with("_mean"),
+                                  ends_with("_change")))
+  Val_DM <- model.matrix(hospital_expire_flag ~ .,
+                         data = Data_for_Predictions %>%
+                           select(hospital_expire_flag,
+                                  age_grouped,
+                                  gender,
+                                  admission_type,
+                                  ethnicity_grouped,
+                                  ends_with("_mean"),
+                                  ends_with("_change")))
+  
+  P <- ncol(Dev_DM) - 1 #number of predictor terms (minus 1 for intercept)
+  
+  #####-------------------------------FIT THE MODELS--------------------------------------------
+  ## Unpenalisaed MLE
+  MLE_CPM <- glm(hospital_expire_flag ~ .,
+                 data = Data_for_Model_Fit %>%
+                   select(hospital_expire_flag,
+                          age_grouped,
+                          gender,
+                          admission_type,
+                          ethnicity_grouped,
+                          ends_with("_mean"),
+                          ends_with("_change")),
+                 family = binomial(link = "logit"))
+  MLE_pi_insampl <- predict(MLE_CPM, 
+                            newdata = Data_for_Model_Fit, 
+                            type = "response") #in-sample predictions
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate(MLE_CPM_Pi = MLE_pi_insampl)
+  MLE_pi_outsampl <- predict(MLE_CPM, 
+                             newdata = Data_for_Predictions, 
+                             type = "response") #out-of-sample predictions
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate(MLE_CPM_Pi = MLE_pi_outsampl)
+  
+  
+  ## Closed-form uniform shrinkage
+  LR_MLE <- -2 * (as.numeric(logLik(with(Data_for_Model_Fit,
+                                         glm(hospital_expire_flag ~ 1,
+                                             family = binomial(link = "logit"))))) - 
+                    as.numeric(logLik(MLE_CPM)))
+  uniform_shrinkage <- 1 + (P / 
+                              (nrow(Data_for_Model_Fit) * log(1 - (1 - exp(-LR_MLE/nrow(Data_for_Model_Fit))))))
+  shrunkMLE_LP <- as.numeric((Dev_DM[,-1]) %*% 
+                               (uniform_shrinkage*coef(MLE_CPM)[-1]))
+  shrunk.MLE.beta <- c(coef(glm(Data_for_Model_Fit$hospital_expire_flag ~ offset(shrunkMLE_LP), 
+                                family = binomial(link = "logit")))[1],
+                       (uniform_shrinkage*coef(MLE_CPM)[-1])) #re-estimate the intercept of shrunk model
+  #Apply shrunk model to calculate predictions:
+  shrunk_CPM_validation_LP <- as.numeric(Dev_DM %*% shrunk.MLE.beta) #in-sample predictions
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate(UniformShrunk_CPM_Pi = (exp(shrunk_CPM_validation_LP)/(1 + exp(shrunk_CPM_validation_LP))))
+  shrunk_CPM_validation_LP <- as.numeric(Val_DM %*% shrunk.MLE.beta) #out-of-sample predictions
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate(UniformShrunk_CPM_Pi = (exp(shrunk_CPM_validation_LP)/(1 + exp(shrunk_CPM_validation_LP))))
+  
+  
+  ## Bootstrap uniform shrinkage
+  Bootstrap_shrinkage <- rep(NA, 500)
+  for (boot in 1:length(Bootstrap_shrinkage)) {
+    BootData <- Data_for_Model_Fit %>%
+      sample_n(n(), replace = TRUE)
+    
+    BootMod <- glm(hospital_expire_flag ~ .,
+                   data = BootData %>%
+                     select(hospital_expire_flag,
+                            age_grouped,
+                            gender,
+                            admission_type,
+                            ethnicity_grouped,
+                            ends_with("_mean"),
+                            ends_with("_change")),
+                   family = binomial(link = "logit"))
+    
+    #Apply the bootstrap model to the original development data:
+    Raw_LP <- Dev_DM %*% coef(BootMod)
+    Bootstrap_shrinkage[boot] <- 1 - #"1 minus" since BootMod perfectly calibrated, by definition, in BootData
+      coef(glm(Data_for_Model_Fit$hospital_expire_flag ~ Raw_LP, 
+               family = binomial(link = "logit")))[2] 
+    
+  }
+  Bootstrap_shrinkage <- 1 - mean(Bootstrap_shrinkage)
+  shrunkMLE_LP <- as.numeric((Dev_DM[,-1]) %*% (Bootstrap_shrinkage*coef(MLE_CPM)[-1]))
+  bootshrunk.MLE.beta <- c(coef(glm(Data_for_Model_Fit$hospital_expire_flag ~ offset(shrunkMLE_LP), 
+                                    family = binomial(link = "logit")))[1],
+                           (Bootstrap_shrinkage*coef(MLE_CPM)[-1])) #re-estimate the intercept of shrunk model
+  #Apply shrunk model to the validation set:
+  shrunk_CPM_validation_LP <- as.numeric(Dev_DM %*% bootshrunk.MLE.beta) #in-sample predictions
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate(BootstrapShrunk_CPM_Pi = (exp(shrunk_CPM_validation_LP)/(1 + exp(shrunk_CPM_validation_LP))))
+  shrunk_CPM_validation_LP <- as.numeric(Val_DM %*% bootshrunk.MLE.beta) #out-of-sample predictions
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate(BootstrapShrunk_CPM_Pi = (exp(shrunk_CPM_validation_LP)/(1 + exp(shrunk_CPM_validation_LP))))
+  
+  
+  ## Firth's Bias-reduced logistic regression
+  Firths_CPM <- logistf(hospital_expire_flag ~ .,
+                        data = Data_for_Model_Fit %>%
+                          select(hospital_expire_flag,
+                                 age_grouped,
+                                 gender,
+                                 admission_type,
+                                 ethnicity_grouped,
+                                 ends_with("_mean"),
+                                 ends_with("_change")),
+                        firth = TRUE)
+  Firths_CPM_validation_LP <- as.numeric(Dev_DM %*% as.numeric(coef(Firths_CPM))) #in-sample predictions
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate(Firths_CPM_Pi = (exp(Firths_CPM_validation_LP)/(1 + exp(Firths_CPM_validation_LP))))
+  Firths_CPM_validation_LP <- as.numeric(Val_DM %*% as.numeric(coef(Firths_CPM))) #out-of-sample predictions
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate(Firths_CPM_Pi = (exp(Firths_CPM_validation_LP)/(1 + exp(Firths_CPM_validation_LP))))
+  
+  
+  ## LASSO
+  LASSO_CPM <- cv.glmnet(x = Dev_DM[,-1],
+                         y = Data_for_Model_Fit$hospital_expire_flag,
+                         family = "binomial",
+                         alpha = 1,
+                         nfolds = 10)
+  #in-sample predictions:
+  LASSO_Predictions <- predict(LASSO_CPM,
+                               newx = Dev_DM[,-1],
+                               s = "lambda.min",
+                               type = "response")
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate("LASSO_CPM_Pi" = c(LASSO_Predictions))
+  #out-of-sample predictions:
+  LASSO_Predictions <- predict(LASSO_CPM,
+                               newx = Val_DM[,-1],
+                               s = "lambda.min",
+                               type = "response")
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate("LASSO_CPM_Pi" = c(LASSO_Predictions))
+  
+  
+  ## Ridge
+  Ridge_CPM <- cv.glmnet(x = Dev_DM[,-1],
+                         y = Data_for_Model_Fit$hospital_expire_flag,
+                         family = "binomial",
+                         alpha = 0,
+                         nfolds = 10)
+  #in-sample predictions:
+  Ridge_Predictions <- predict(Ridge_CPM,
+                               newx = Dev_DM[,-1],
+                               s = "lambda.min",
+                               type = "response")
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate("Ridge_CPM_Pi" = c(Ridge_Predictions))
+  #out-of-sample predictions:
+  Ridge_Predictions <- predict(Ridge_CPM,
+                               newx = Val_DM[,-1],
+                               s = "lambda.min",
+                               type = "response")
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate("Ridge_CPM_Pi" = c(Ridge_Predictions))
+  
+  
+  #####-------------------------------TEST THE MODELS--------------------------------------------
+  ##Internal function to test predictive performance:
+  Performance_fnc <- function(PredictedRisk, Response) {
+    LP <- log(PredictedRisk / (1 - PredictedRisk))
+    
+    CITL_mod <- glm(Response ~ offset(LP), family = binomial(link = "logit"))
+    CITL <- as.numeric(coef(CITL_mod)[1])
+    CITL_se <- sqrt(vcov(CITL_mod)[1,1])
+    
+    CalSlope_mod <- glm(Response ~ LP, family = binomial(link = "logit"))
+    CalSlope <- as.numeric(coef(CalSlope_mod)[2])
+    CalSlope_se <- sqrt(vcov(CalSlope_mod)[2,2])
+    
+    AUC <- roc(response = Response,
+               predictor = PredictedRisk,
+               direction = "<",
+               levels = c(0,1),
+               ci = TRUE)
+    
+    return(list("CITL" = CITL,
+                "CITL_se" = CITL_se,
+                "CalSlope" = CalSlope,
+                "CalSlope_se" = CalSlope_se,
+                "AUC" = as.numeric(AUC$auc),
+                "AUC_se" = sqrt(var(AUC))))
+  }
+  
+  InSamplePredictivePerformance <- map(list("MLE" = Data_for_Model_Fit$MLE_CPM_Pi
+                                             , "Uniform" = Data_for_Model_Fit$UniformShrunk_CPM_Pi
+                                             , "Bootstrap" = Data_for_Model_Fit$BootstrapShrunk_CPM_Pi
+                                             , "Firth" = Data_for_Model_Fit$Firths_CPM_Pi
+                                             , "LASSO" = Data_for_Model_Fit$LASSO_CPM_Pi
+                                             , "Ridge" = Data_for_Model_Fit$Ridge_CPM_Pi
+                                             ),
+                                        Performance_fnc,
+                                        Response = Data_for_Model_Fit$hospital_expire_flag) %>%
+    map_df(as_tibble, .id = "Model") %>%
+    rename_at(.vars = vars(-Model),
+              ~paste0("InSample_", ., sep = ""))
+  OutSamplePredictivePerformance <- map(list("MLE" = Data_for_Predictions$MLE_CPM_Pi
+                                             , "Uniform" = Data_for_Predictions$UniformShrunk_CPM_Pi
+                                             , "Bootstrap" = Data_for_Predictions$BootstrapShrunk_CPM_Pi
+                                             , "Firth" = Data_for_Predictions$Firths_CPM_Pi
+                                             , "LASSO" = Data_for_Predictions$LASSO_CPM_Pi
+                                             , "Ridge" = Data_for_Predictions$Ridge_CPM_Pi
+                                             ),
+                                        Performance_fnc,
+                                        Response = Data_for_Predictions$hospital_expire_flag) %>%
+    map_df(as_tibble, .id = "Model") %>%
+    rename_at(.vars = vars(-Model),
+              ~paste0("OutSample_", ., sep = ""))
+  
+  
+  #Save the performance results in a tibble:
+  outputs <- InSamplePredictivePerformance %>%
+    left_join(OutSamplePredictivePerformance, by = "Model")
+  
+  
+  #####-------------------------------RETURN PREDICTED PERFORMANCE-------------------------------
+  return(outputs)
+}
+
+
+
+####----------------------------------------------------------------------------------------
+## Fit the models to the raw data, bootstrap data, and obtain internal validation results
+####----------------------------------------------------------------------------------------
+
+
+#Create a nested dataframe with each bootstrap data per (nested) row, 
+# then pass this list of data to the above function
+set.seed(260626)
+nested_analysis_data <- tibble("Bootstrap_Index" = 0,
+                               "Original_Data" = list(Analysis_Cohort),
+                               #set first row to raw data (to obtain apparent performance):
+                               "Bootstrap_Data" = list(Analysis_Cohort) 
+                               ) %>%
+  bind_rows(tibble("Bootstrap_Index" = 1:100, #set how many bootstrap sample we wish to take
+                   "Original_Data" = list(Analysis_Cohort)) %>%
+              #Apply the boostrap resampling:
+              mutate("Bootstrap_Data" =  map(Original_Data,
+                                             function(df) df %>% sample_n(nrow(df), replace = TRUE))))
+ 
+#identical(nested_analysis_data$Bootstrap_Data[[20]], nested_analysis_data$Bootstrap_Data[[12]]) #=FALSE
+#identical(nested_analysis_data$Bootstrap_Data[[10]], nested_analysis_data$Bootstrap_Data[[95]]) #=FALSE
+#identical(nested_analysis_data$Original_Data[[10]], nested_analysis_data$Bootstrap_Data[[10]]) #=FALSE
+#identical(nested_analysis_data$Original_Data[[1]], nested_analysis_data$Bootstrap_Data[[1]]) #=TRUE, as expected
+
+
+##Apply the modelling functions to each bootstrap dataset (runs in parallel):
+plan(multiprocess)
+
+nested_analysis_data <- nested_analysis_data %>%
+  #Calculate the performance results of a model developed on each bootstrap data and tested in the original data:
+  mutate("Results" = future_pmap(list(Data_for_Model_Fit = Bootstrap_Data,# fit models on bootstrap data
+                                      Data_for_Predictions = Original_Data),#test them on the raw data (to get optimism)
+                                 modelling_fnc,
+                                 .progress = TRUE
+                                 ) 
+         )
+
+
+# write_rds(nested_analysis_data, path = here::here("Data", "mimic_analysis_results.RDS"))
+
+
+
+####----------------------------------------------------------------------------------------
+## Summarise results for entry into the manuscript
+####----------------------------------------------------------------------------------------
+
+# nested_analysis_data <- read_rds(here::here("Data", "mimic_analysis_results.RDS"))
+
+# Unnest each result to create a tibble of performance results across the bootstraps:
+summary_mimic_results <- nested_analysis_data %>%
+  select(Bootstrap_Index, Results) %>%
+  unnest(cols = c(Results)) 
+
+##First manipulate the data in a format we can work with:
+Bootstrap_InternalValidation <- summary_mimic_results %>%
+  filter(Bootstrap_Index != 0) %>%
+  select(Bootstrap_Index,
+         Model,
+         InSample_CITL,
+         InSample_CalSlope,
+         InSample_AUC,
+         OutSample_CITL,
+         OutSample_CalSlope,
+         OutSample_AUC) %>%
+  #pivot the bootstrap internal validation results into long format:
+  pivot_longer(col = c(-Bootstrap_Index, -Model),
+               names_to = "Sample_Metric") %>%
+  separate(Sample_Metric, into = c("Sample", "Metric"), sep = "_") %>%
+  #Place the Outsample bootstrap performance estimates 'next to' the in-bootstrap-sample estimates:
+  pivot_wider(id_cols = c("Bootstrap_Index", "Model", "Metric"),
+              names_from = "Sample",
+              values_from = "value") %>%
+  #Calculate the optimism for each performance metric, as being the difference between
+  #the performance of each bootstrap model within the bootstrap data (insample performance)
+  #and the performance of each bootstrap model within the raw data (outsample performance):
+  mutate(optimism = (InSample - OutSample)) %>%
+  select(Bootstrap_Index,
+         Model,
+         Metric,
+         optimism) %>%
+  #Join the bootstrap internal validation results above, with the apparent results:
+  left_join(summary_mimic_results %>%
+              filter(Bootstrap_Index == 0) %>% 
+              select(Model,
+                     #need only select these results since OutSample_. are identical by definition
+                     InSample_CITL,
+                     InSample_CalSlope,
+                     InSample_AUC) %>%
+              #pivot this into long format to match the bootstrap resutls above:
+              pivot_longer(cols = c(-Model),
+                           names_to = "Sample_Metric",
+                           values_to = "ApparentPerformance") %>%
+              separate(Sample_Metric, into = c("Sample", "Metric"), sep = "_") %>%
+              select(-Sample),
+            by = c("Model", "Metric")) %>%
+  #Calculate the adjusted performance as the performance of the models fit 
+  #to the raw (original) data (i.e. apparent performance) minus each 
+  #optimism estimate across bootstraps:
+  mutate(AdjustedPerformance = ApparentPerformance - optimism)
+
+##Normally one just looks at the mean performance (with 95% CI of this mean) across
+#the bootstrap internal validation (i.e. average performance):
+Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>% 
+  mutate(Model = fct_relevel(fct_recode(Model,
+                                        "Uniform closed-form" = "Uniform",
+                                        "Uniform bootstrap" = "Bootstrap",
+                                        "Firths" = "Firth"),
+                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
+                             "LASSO", "Ridge")) %>%
+  group_by(Model, Metric) %>% 
+  summarise("Mean" = mean(AdjustedPerformance), 
+            "sd" = sd(AdjustedPerformance)) %>%
+  mutate("Lower" = Mean - (1.96*sd),
+         "Upper" = Mean + (1.96*sd),
+         #Present mean and 95% CI ready for table output:
+         "Value" = paste(round(Mean, 3), 
+                         " (", 
+                         round(Lower, 3), 
+                         ", ", 
+                         round(Upper, 3), 
+                         ")", sep = "")) %>%
+  ungroup() %>%
+  select(Model, Metric, Value) %>%
+  pivot_wider(names_from = "Metric",
+              values_from = "Value") %>%
+  select(Model, CITL, CalSlope, AUC) %>%
+  rename("Calibration-in-the-large" = "CITL",
+         "Calibration Slope" = "CalSlope",
+         "AUC" = "AUC")
+
+#....we suggest that it is also constructive to look at the distribution of each 
+#adjusted performance results across the bootstrap samples, as well as the mean:
+Box_violin_mimiciii_plot <- Bootstrap_InternalValidation %>%
+  mutate(Model = fct_relevel(fct_recode(Model,
+                                        "Uniform closed-form" = "Uniform",
+                                        "Uniform bootstrap" = "Bootstrap",
+                                        "Firths" = "Firth"),
+                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
+                             "LASSO", "Ridge"),
+         
+         Metric = fct_relevel(fct_recode(Metric,
+                                         "Calibration-in-the-large" = "CITL",
+                                         "Calibration Slope" = "CalSlope",
+                                         "AUC" = "AUC"),
+                              "Calibration-in-the-large", "Calibration Slope", "AUC")) %>%
+  ggplot(aes(x = Model, y = AdjustedPerformance, fill = Model)) +
+  facet_wrap(~Metric,
+             nrow = 3, scale = "free_y") +
+  geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
+  geom_boxplot(notch = FALSE) + 
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Bootstrap Adjusted Performance") +
+  xlab("Estimation Method")
+
+
+## Save the results for entry into the paper:
+mimic_tables_figures <- list("MIMIC_Sample_Size_Calc_Table" = MIMIC_Sample_Size_Calc_Table,
+                             "Tables_mimiciii_mean_summary" = Tables_mimiciii_mean_summary,
+                             "Box_violin_mimiciii_plot" = Box_violin_mimiciii_plot)
+
+write_rds(mimic_tables_figures, path = here::here("Data", "mimic_tables_figures.RDS"))
