@@ -1,3 +1,19 @@
+# #######################################################################################################################
+
+# Author of code: Glen P. Martin.
+
+# This is code for a empirical study presented in a manuscript entitled: 
+# Developing Clinical Prediction Models Using Data that Adheres to
+# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Authors:
+#   Glen P. Martin
+#   Richard Riley
+#   Gary S. Collins
+#   Matthew Sperrin
+
+
+# #######################################################################################################################
+
 library(tidyverse)
 library(furrr)
 library(pmsampsize)
@@ -126,7 +142,7 @@ P <- ncol(model.matrix(hospital_expire_flag ~ .,
                                 admission_type,
                                 ethnicity_grouped,
                                 ends_with("_mean"),
-                                ends_with("_change")))) - 1
+                                ends_with("_change"))))
 
 
 MIMIC_Sample_Size_Calc_Table <- as.data.frame(pmsampsize(type = "b",
@@ -248,12 +264,11 @@ modelling_fnc <- function(Data_for_Model_Fit,
     
     #Apply the bootstrap model to the original development data:
     Raw_LP <- Dev_DM %*% coef(BootMod)
-    Bootstrap_shrinkage[boot] <- 1 - #"1 minus" since BootMod perfectly calibrated, by definition, in BootData
-      coef(glm(Data_for_Model_Fit$hospital_expire_flag ~ Raw_LP, 
-               family = binomial(link = "logit")))[2] 
+    Bootstrap_shrinkage[boot] <- coef(glm(Data_for_Model_Fit$hospital_expire_flag ~ Raw_LP, 
+                                          family = binomial(link = "logit")))[2] 
     
   }
-  Bootstrap_shrinkage <- 1 - mean(Bootstrap_shrinkage)
+  Bootstrap_shrinkage <- mean(Bootstrap_shrinkage)
   shrunkMLE_LP <- as.numeric((Dev_DM[,-1]) %*% (Bootstrap_shrinkage*coef(MLE_CPM)[-1]))
   bootshrunk.MLE.beta <- c(coef(glm(Data_for_Model_Fit$hospital_expire_flag ~ offset(shrunkMLE_LP), 
                                     family = binomial(link = "logit")))[1],
@@ -278,10 +293,16 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                  ends_with("_mean"),
                                  ends_with("_change")),
                         firth = TRUE)
-  Firths_CPM_validation_LP <- as.numeric(Dev_DM %*% as.numeric(coef(Firths_CPM))) #in-sample predictions
+  #re-estimate the intercept ready for prediction:
+  Firths_LP <- as.numeric((Dev_DM[,-1]) %*% (as.numeric(coef(Firths_CPM))[-1]))
+  Firths.beta <- c(coef(glm(Data_for_Model_Fit$hospital_expire_flag ~ offset(Firths_LP), 
+                            family = binomial(link = "logit")))[1],
+                   (as.numeric(coef(Firths_CPM))[-1])) 
+  #Make predictions:
+  Firths_CPM_validation_LP <- as.numeric(Dev_DM %*% Firths.beta) #in-sample predictions
   Data_for_Model_Fit <- Data_for_Model_Fit %>%
     mutate(Firths_CPM_Pi = (exp(Firths_CPM_validation_LP)/(1 + exp(Firths_CPM_validation_LP))))
-  Firths_CPM_validation_LP <- as.numeric(Val_DM %*% as.numeric(coef(Firths_CPM))) #out-of-sample predictions
+  Firths_CPM_validation_LP <- as.numeric(Val_DM %*% Firths.beta) #out-of-sample predictions
   Data_for_Predictions <- Data_for_Predictions %>%
     mutate(Firths_CPM_Pi = (exp(Firths_CPM_validation_LP)/(1 + exp(Firths_CPM_validation_LP))))
   
@@ -420,7 +441,7 @@ nested_analysis_data <- tibble("Bootstrap_Index" = 0,
 
 
 ##Apply the modelling functions to each bootstrap dataset (runs in parallel):
-plan(multiprocess)
+plan(multiprocess, workers = (availableCores() - 1))
 
 nested_analysis_data <- nested_analysis_data %>%
   #Calculate the performance results of a model developed on each bootstrap data and tested in the original data:
@@ -437,20 +458,67 @@ nested_analysis_data <- nested_analysis_data %>%
 
 
 ####----------------------------------------------------------------------------------------
+## LOWER SAMPLE EXAMPLE: Fit the models to a sample of the raw data
+####----------------------------------------------------------------------------------------
+
+
+#Create a nested dataframe with each bootstrap data per (nested) row, 
+# then pass this list of data to the above function
+set.seed(98023)
+Analysis_Cohort_Subset <- Analysis_Cohort %>%
+  sample_n(MIMIC_Sample_Size_Calc_Table$Final, replace = FALSE)
+
+subset_nested_analysis_data <- tibble("Bootstrap_Index" = 0,
+                                      "Original_Data" = list(Analysis_Cohort_Subset),
+                                      #set first row to raw data (to obtain apparent performance):
+                                      "Bootstrap_Data" = list(Analysis_Cohort_Subset) 
+                                      ) %>%
+  bind_rows(tibble("Bootstrap_Index" = 1:100, #set how many bootstrap sample we wish to take
+                   "Original_Data" = list(Analysis_Cohort_Subset)) %>%
+              #Apply the boostrap resampling:
+              mutate("Bootstrap_Data" =  map(Original_Data,
+                                             function(df) df %>% sample_n(nrow(df), replace = TRUE))))
+
+##Apply the modelling functions to each bootstrap dataset (runs in parallel):
+plan(multiprocess, workers = (availableCores() - 1))
+
+subset_nested_analysis_data <- subset_nested_analysis_data %>%
+  #Calculate the performance results of a model developed on each bootstrap data and tested in the original data:
+  mutate("Results" = future_pmap(list(Data_for_Model_Fit = Bootstrap_Data,# fit models on bootstrap data
+                                      Data_for_Predictions = Original_Data),#test them on the raw data (to get optimism)
+                                 modelling_fnc,
+                                 .progress = TRUE)
+         )
+
+
+# write_rds(subset_nested_analysis_data, path = here::here("Data", "mimic_analysis_subset_results.RDS"))
+
+
+
+
+####----------------------------------------------------------------------------------------
 ## Summarise results for entry into the manuscript
 ####----------------------------------------------------------------------------------------
 
 # nested_analysis_data <- read_rds(here::here("Data", "mimic_analysis_results.RDS"))
+# subset_nested_analysis_data <- read_rds(here::here("Data", "mimic_analysis_subset_results.RDS"))
 
 # Unnest each result to create a tibble of performance results across the bootstraps:
 summary_mimic_results <- nested_analysis_data %>%
   select(Bootstrap_Index, Results) %>%
-  unnest(cols = c(Results)) 
+  unnest(cols = c(Results)) %>%
+  mutate("Study" = "Main", .before = "Bootstrap_Index") %>%
+  bind_rows(subset_nested_analysis_data %>%
+              select(Bootstrap_Index, Results) %>%
+              unnest(cols = c(Results)) %>%
+              mutate("Study" = "Subset", .before = "Bootstrap_Index"))
+
 
 ##First manipulate the data in a format we can work with:
 Bootstrap_InternalValidation <- summary_mimic_results %>%
   filter(Bootstrap_Index != 0) %>%
-  select(Bootstrap_Index,
+  select(Study,
+         Bootstrap_Index,
          Model,
          InSample_CITL,
          InSample_CalSlope,
@@ -459,92 +527,114 @@ Bootstrap_InternalValidation <- summary_mimic_results %>%
          OutSample_CalSlope,
          OutSample_AUC) %>%
   #pivot the bootstrap internal validation results into long format:
-  pivot_longer(col = c(-Bootstrap_Index, -Model),
+  pivot_longer(col = c(-Study, -Bootstrap_Index, -Model),
                names_to = "Sample_Metric") %>%
   separate(Sample_Metric, into = c("Sample", "Metric"), sep = "_") %>%
   #Place the Outsample bootstrap performance estimates 'next to' the in-bootstrap-sample estimates:
-  pivot_wider(id_cols = c("Bootstrap_Index", "Model", "Metric"),
+  pivot_wider(id_cols = c("Study", "Bootstrap_Index", "Model", "Metric"),
               names_from = "Sample",
               values_from = "value") %>%
   #Calculate the optimism for each performance metric, as being the difference between
   #the performance of each bootstrap model within the bootstrap data (insample performance)
   #and the performance of each bootstrap model within the raw data (outsample performance):
   mutate(optimism = (InSample - OutSample)) %>%
-  select(Bootstrap_Index,
+  select(Study,
+         Bootstrap_Index,
          Model,
          Metric,
          optimism) %>%
   #Join the bootstrap internal validation results above, with the apparent results:
   left_join(summary_mimic_results %>%
-              filter(Bootstrap_Index == 0) %>% 
-              select(Model,
+              filter(Bootstrap_Index == 0) %>%
+              select(Study,
+                     Model,
                      #need only select these results since OutSample_. are identical by definition
                      InSample_CITL,
                      InSample_CalSlope,
                      InSample_AUC) %>%
               #pivot this into long format to match the bootstrap resutls above:
-              pivot_longer(cols = c(-Model),
+              pivot_longer(cols = c(-Study, -Model),
                            names_to = "Sample_Metric",
                            values_to = "ApparentPerformance") %>%
               separate(Sample_Metric, into = c("Sample", "Metric"), sep = "_") %>%
               select(-Sample),
-            by = c("Model", "Metric")) %>%
-  #Calculate the adjusted performance as the performance of the models fit 
-  #to the raw (original) data (i.e. apparent performance) minus each 
+            by = c("Study", "Model", "Metric")) %>%
+  #Calculate the adjusted performance as the performance of the models fit
+  #to the raw (original) data (i.e. apparent performance) minus each
   #optimism estimate across bootstraps:
   mutate(AdjustedPerformance = ApparentPerformance - optimism)
 
 ##Normally one just looks at the mean performance (with 95% CI of this mean) across
 #the bootstrap internal validation (i.e. average performance):
-Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>% 
+Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>%
   mutate(Model = fct_relevel(fct_recode(Model,
                                         "Uniform closed-form" = "Uniform",
                                         "Uniform bootstrap" = "Bootstrap",
                                         "Firths" = "Firth"),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
+                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
                              "LASSO", "Ridge")) %>%
-  group_by(Model, Metric) %>% 
-  summarise("Mean" = mean(AdjustedPerformance), 
-            "sd" = sd(AdjustedPerformance)) %>%
+  group_by(Study, Model, Metric) %>%
+  summarise("Mean" = mean(AdjustedPerformance),
+            "sd" = sd(AdjustedPerformance),
+            .groups = "drop") %>%
+  ungroup() %>%
   mutate("Lower" = Mean - (1.96*sd),
          "Upper" = Mean + (1.96*sd),
          #Present mean and 95% CI ready for table output:
-         "Value" = paste(round(Mean, 3), 
-                         " (", 
-                         round(Lower, 3), 
-                         ", ", 
-                         round(Upper, 3), 
+         "Value" = paste(round(Mean, 3),
+                         " (",
+                         round(Lower, 3),
+                         ", ",
+                         round(Upper, 3),
                          ")", sep = "")) %>%
-  ungroup() %>%
-  select(Model, Metric, Value) %>%
-  pivot_wider(names_from = "Metric",
+  select(Study, Model, Metric, Value) %>%
+  pivot_wider(id_cols = c("Study", "Model"),
+              names_from = "Metric",
               values_from = "Value") %>%
-  select(Model, CITL, CalSlope, AUC) %>%
+  select(Study, Model, CITL, CalSlope, AUC) %>%
   rename("Calibration-in-the-large" = "CITL",
          "Calibration Slope" = "CalSlope",
          "AUC" = "AUC")
 
-#....we suggest that it is also constructive to look at the distribution of each 
+#....we suggest that it is also constructive to look at the distribution of each
 #adjusted performance results across the bootstrap samples, as well as the mean:
 Box_violin_mimiciii_plot <- Bootstrap_InternalValidation %>%
   mutate(Model = fct_relevel(fct_recode(Model,
                                         "Uniform closed-form" = "Uniform",
                                         "Uniform bootstrap" = "Bootstrap",
                                         "Firths" = "Firth"),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
+                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
                              "LASSO", "Ridge"),
-         
+
          Metric = fct_relevel(fct_recode(Metric,
                                          "Calibration-in-the-large" = "CITL",
                                          "Calibration Slope" = "CalSlope",
                                          "AUC" = "AUC"),
                               "Calibration-in-the-large", "Calibration Slope", "AUC")) %>%
   ggplot(aes(x = Model, y = AdjustedPerformance, fill = Model)) +
-  facet_wrap(~Metric,
-             nrow = 3, scale = "free_y") +
+  facet_wrap(~Metric + Study,
+             nrow = 3, ncol = 2, scale = "free_y") +
   geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
-  geom_boxplot(notch = FALSE) + 
+  geom_boxplot(notch = FALSE) +
   geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
+  geom_blank(data = data.frame("Metric" = "Calibration-in-the-large",
+                               "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
+                                           "LASSO", "Ridge"),
+                               "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
+                                 which(Bootstrap_InternalValidation$Metric=="CITL")
+                               ]))) +
+  geom_blank(data = data.frame("Metric" = "Calibration Slope",
+                               "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
+                                           "LASSO", "Ridge"),
+                               "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
+                                 which(Bootstrap_InternalValidation$Metric=="CalSlope")
+                               ]))) +
+  geom_blank(data = data.frame("Metric" = "AUC",
+                               "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
+                                           "LASSO", "Ridge"),
+                               "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
+                                 which(Bootstrap_InternalValidation$Metric=="AUC")
+                               ]))) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   ylab("Bootstrap Adjusted Performance") +
