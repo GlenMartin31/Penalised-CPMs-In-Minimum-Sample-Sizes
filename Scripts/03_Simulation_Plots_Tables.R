@@ -1,3 +1,19 @@
+# #######################################################################################################################
+
+# Author of code: Glen P. Martin.
+
+# This is code for a simulation study presented in a manuscript entitled: 
+# Developing Clinical Prediction Models Using Data that Adheres to
+# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Authors:
+#   Glen P. Martin
+#   Richard Riley
+#   Gary S. Collins
+#   Matthew Sperrin
+
+
+# #######################################################################################################################
+
 ####-----------------------------------------------------------------------------------------
 ## This script produces the plots and tables for the paper (simulation results)
 ####-----------------------------------------------------------------------------------------
@@ -23,7 +39,7 @@ simulation_scenario_table <- sims_all %>%
                            "5 predictors and 5 noise terms" = "halfX")) %>%
   rename("Simulation Scenario" = "SimulationScenario",
          "Rho" = "RhoX",
-         "Prevelence of Y" = "Y_prev",
+         "Prevalence of Y" = "Y_prev",
          "R2 for Sample Size Calculation" = "R2_based_on_maxR2") 
 
 ####-----------------------------------------------------------------------------------------

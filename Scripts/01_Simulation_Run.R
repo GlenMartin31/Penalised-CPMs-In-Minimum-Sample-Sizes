@@ -1,3 +1,19 @@
+# #######################################################################################################################
+
+# Author of code: Glen P. Martin.
+
+# This is code for a simulation study presented in a manuscript entitled: 
+# Developing Clinical Prediction Models Using Data that Adheres to
+# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Authors:
+#   Glen P. Martin
+#   Richard Riley
+#   Gary S. Collins
+#   Matthew Sperrin
+
+
+# #######################################################################################################################
+
 ####-----------------------------------------------------------------------------------------
 ## This script runs the simulations across all scenarios: runs in parallel using furrr
 ####-----------------------------------------------------------------------------------------
@@ -16,11 +32,10 @@ sims_parameters <- crossing(
 )
 
 # number of repeats per scenario
-n_rep <- 100
+n_rep <- 500
 
-#Set up paralell process
-plan(multiprocess)
-
+#Set up parallel process
+plan(multiprocess, workers = (availableCores() - 1))
 set.seed(698137)
 sims_allXpredict <- sims_parameters %>%
   mutate(results = future_pmap(list(n_iter = n_rep, 
@@ -29,13 +44,15 @@ sims_allXpredict <- sims_parameters %>%
                                     Y_prev = Y_prev, 
                                     R2_based_on_maxR2 = R2_based_on_maxR2),
                                simulation_nruns_fnc,
-                               beta_true = c(rep(0.2, 6), rep(0.5, 2), rep(0.8, 2)),
+                               beta_true = c(rep(log(1.5), 6), rep(log(2), 2), rep(log(3), 2)),
                                .progress = TRUE
                                )
          )
-
 write_rds(sims_allXpredict, path = here::here("Data", "sims_allXpredict.RDS"))
 
+
+#Set up parallel process
+plan(multiprocess, workers = (availableCores() - 1))
 set.seed(698138)
 sims_halfXpredict <- sims_parameters %>%
   mutate(results = future_pmap(list(n_iter = n_rep, 
@@ -44,9 +61,8 @@ sims_halfXpredict <- sims_parameters %>%
                                     Y_prev = Y_prev, 
                                     R2_based_on_maxR2 = R2_based_on_maxR2),
                                simulation_nruns_fnc,
-                               beta_true = c(0.2, 0.2, 0.2, 0.5, 0.8, rep(0, 5)),
+                               beta_true = c(rep(log(1.5), 3), log(2), log(3), rep(0, 5)),
                                .progress = TRUE
                                )
          )
-
 write_rds(sims_halfXpredict, path = here::here("Data", "sims_halfXpredict.RDS"))

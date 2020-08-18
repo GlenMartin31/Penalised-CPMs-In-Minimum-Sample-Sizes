@@ -1,3 +1,19 @@
+# #######################################################################################################################
+
+# Author of code: Glen P. Martin.
+
+# This is code for a simulation study presented in a manuscript entitled: 
+# Developing Clinical Prediction Models Using Data that Adheres to
+# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Authors:
+#   Glen P. Martin
+#   Richard Riley
+#   Gary S. Collins
+#   Matthew Sperrin
+
+
+# #######################################################################################################################
+
 ####-----------------------------------------------------------------------------------------
 ## This script summarises the simulation results, and manipulates the data in a format ready
 ## for plotting.
