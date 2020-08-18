@@ -8,6 +8,7 @@ Outputs/
 
 #Ignore the mimic dataset
 mimic_analysis_results.RDS
+mimic_analysis_subset_results.RDS
 mimic_penalised_cpms_cohort.csv
 
 #Ignore manuscript folder (until published)
