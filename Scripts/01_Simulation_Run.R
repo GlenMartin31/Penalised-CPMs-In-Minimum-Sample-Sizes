@@ -32,11 +32,10 @@ sims_parameters <- crossing(
 )
 
 # number of repeats per scenario
-n_rep <- 500
+n_rep <- 100
 
 #Set up parallel process
 plan(multiprocess, workers = (availableCores() - 1))
-set.seed(698137)
 sims_allXpredict <- sims_parameters %>%
   mutate(results = future_pmap(list(n_iter = n_rep, 
                                     P = P, 
@@ -45,15 +44,14 @@ sims_allXpredict <- sims_parameters %>%
                                     R2_based_on_maxR2 = R2_based_on_maxR2),
                                simulation_nruns_fnc,
                                beta_true = c(rep(log(1.5), 6), rep(log(2), 2), rep(log(3), 2)),
-                               .progress = TRUE
-                               )
+                               .progress = TRUE,
+                               .options = future_options(seed = as.integer(698137)))
          )
 write_rds(sims_allXpredict, path = here::here("Data", "sims_allXpredict.RDS"))
 
 
 #Set up parallel process
 plan(multiprocess, workers = (availableCores() - 1))
-set.seed(698138)
 sims_halfXpredict <- sims_parameters %>%
   mutate(results = future_pmap(list(n_iter = n_rep, 
                                     P = P, 
@@ -62,7 +60,7 @@ sims_halfXpredict <- sims_parameters %>%
                                     R2_based_on_maxR2 = R2_based_on_maxR2),
                                simulation_nruns_fnc,
                                beta_true = c(rep(log(1.5), 3), log(2), log(3), rep(0, 5)),
-                               .progress = TRUE
-                               )
+                               .progress = TRUE,
+                               .options = future_options(seed = as.integer(91605)))
          )
 write_rds(sims_halfXpredict, path = here::here("Data", "sims_halfXpredict.RDS"))
