@@ -16,7 +16,7 @@
 ####-----------------------------------------------------------------------------------------
 ## Define a function to repeat the simulation across all iterations
 ####-----------------------------------------------------------------------------------------
-simulation_nruns_fnc <- function(n_iter = 100,
+simulation_nruns_fnc <- function(n_iter,
                                  P,
                                  RhoX,
                                  Y_prev,
@@ -293,16 +293,12 @@ Performance_fnc <- function(PredictedRisk, Response) {
   LP <- log(PredictedRisk / (1 - PredictedRisk))
   
   CITL_mod <- glm(Response ~ offset(LP), family = binomial(link = "logit"))
-  CILT_confint <- confint(profile(CITL_mod), level = 0.95)
   CITL <- as.numeric(coef(CITL_mod)[1])
-  CITL_lower <- CILT_confint["2.5 %"]
-  CITL_upper <- CILT_confint["97.5 %"]
+  CITLSE <- sqrt(vcov(CITL_mod)[1,1])  
   
   CalSlope_mod <- glm(Response ~ LP, family = binomial(link = "logit"))
-  CalSlope_confint <- confint(profile(CalSlope_mod), level = 0.95)
   CalSlope <- as.numeric(coef(CalSlope_mod)[2])
-  CalSlope_lower <- as.numeric(CalSlope_confint["LP", "2.5 %"])
-  CalSlope_upper <- as.numeric(CalSlope_confint["LP", "97.5 %"])
+  CalSlopeSE <- sqrt(vcov(CalSlope_mod)[2,2])
   
   AUC <- roc(response = Response,
              predictor = PredictedRisk,
@@ -315,14 +311,11 @@ Performance_fnc <- function(PredictedRisk, Response) {
   R2_coxsnell <- 1 - exp(-LR/length(Response))
   
   return(list("CITL" = CITL,
-              "CITL_lower" = CITL_lower,
-              "CITL_upper" = CITL_upper,
+              "CITLSE" = CITLSE,
               "CalSlope" = CalSlope,
-              "CalSlope_lower" = CalSlope_lower,
-              "CalSlope_upper" = CalSlope_upper,
+              "CalSlopeSE" = CalSlopeSE,
               "AUC" = as.numeric(AUC$auc),
-              "AUC_lower" = as.numeric(AUC$ci)[1],
-              "AUC_upper" = as.numeric(AUC$ci)[3],
-              "R2_coxsnell" = R2_coxsnell))
+              "AUCSE" = sqrt(var(AUC)),
+              "R2" = R2_coxsnell))
 }
 
