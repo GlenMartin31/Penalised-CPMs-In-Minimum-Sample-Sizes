@@ -27,17 +27,17 @@ source(here::here("Scripts", "02_Simulation_Summary.R"))
 ####-----------------------------------------------------------------------------------------
 
 simulation_scenario_table <- sims_all %>%
-  distinct(SimulationScenario, .keep_all = TRUE) %>%
-  select(SimulationScenario, RhoX, Y_prev, R2_based_on_maxR2, Beta) %>%
+  select(Simulation_Scenario, RhoX, Y_prev, R2_based_on_maxR2, Beta) %>%
+  distinct(Simulation_Scenario, .keep_all = TRUE) %>%
   mutate(R2_based_on_maxR2 = factor(ifelse(R2_based_on_maxR2 == TRUE,
                                            "Sample Size based on max R2",
                                            "Sample Size based on population R2"),
                                     levels = c("Sample Size based on population R2",
                                                "Sample Size based on max R2")),
          Beta = fct_recode(Beta,
-                           "All 10 predictors" = "allX",
-                           "5 predictors and 5 noise terms" = "halfX")) %>%
-  rename("Simulation Scenario" = "SimulationScenario",
+                           "All 10 predictors" = "AllX",
+                           "5 predictors and 5 noise terms" = "HalfX")) %>%
+  rename("Simulation Scenario" = "Simulation_Scenario",
          "Rho" = "RhoX",
          "Prevalence of Y" = "Y_prev",
          "R2 for Sample Size Calculation" = "R2_based_on_maxR2") 
@@ -47,7 +47,7 @@ simulation_scenario_table <- sims_all %>%
 ####-----------------------------------------------------------------------------------------
 
 Table_samplesize_summary_sims <- sims_all %>%
-  group_by(SimulationScenario) %>%
+  group_by(Simulation_Scenario) %>%
   summarise_at("SampleSize",
                .funs = list("median" = median,
                             "mean" = mean,
@@ -55,7 +55,7 @@ Table_samplesize_summary_sims <- sims_all %>%
                             "max" = max)) %>%
   ungroup() %>%
   left_join(sims_all %>%
-              group_by(SimulationScenario) %>%
+              group_by(Simulation_Scenario) %>%
               summarise_at("SampleSizeCriteria",
                            .funs = list(function(x) { #summarise the sample criteria, based on whether unique across scenarios and iterations
                              ifelse(length(unique(x)) == 1,
@@ -63,8 +63,8 @@ Table_samplesize_summary_sims <- sims_all %>%
                                     paste("Varied with min=", min(x), ", and max=", max(x)))
                            })) %>%
               ungroup(),
-            by = "SimulationScenario") %>%
-  rename("Simulation Scenario" = "SimulationScenario",
+            by = "Simulation_Scenario") %>%
+  rename("Simulation Scenario" = "Simulation_Scenario",
          "Sample Size Criteria" = "SampleSizeCriteria")
 
 
@@ -77,28 +77,22 @@ Tables_mean_summary <- mean_summary_sims %>%
   nest() %>%
   mutate("SummaryTable" = map(data, function(x) {
     x %>%
-      mutate("Lower" = mean - (1.96*sd),
-             "Upper" = mean + (1.96*sd),
+      mutate("Lower" = mean - (qnorm(0.975)*BetweenSD),
+             "Upper" = mean + (qnorm(0.975)*BetweenSD),
              #Present mean and 95% CI ready for table output:
-             "Value" = paste(round(mean, 3), 
+             "Value" = paste(format(round(mean, 2), nsmall = 2),
                              " (", 
-                             round(Lower, 3), 
+                             format(round(Lower, 2), nsmall = 2),
                              ", ", 
-                             round(Upper, 3), 
+                             format(round(Upper, 2), nsmall = 2),
                              ")", sep = "")) %>%
-      select(SimulationScenario, Model, Value) %>%
+      select(Simulation_Scenario, Model, Value) %>%
       pivot_wider(names_from = "Model",
                   values_from = "Value") %>%
-      rename("Simulation Scenario" = "SimulationScenario"
-             
-             , "MLE" = "mle"
-             , "Uniform closed-form" = "uniform"
-             , "Uniform bootstrap" = "bootstrap"
-             , "Firths" = "Firths"
-             , "LASSO" = "lasso"
-             , "Ridge" = "ridge"
-             )
-  }))
+      rename("Simulation Scenario" = "Simulation_Scenario")
+    }
+    )
+    )
 
 
 
@@ -107,19 +101,15 @@ Tables_mean_summary <- mean_summary_sims %>%
 ####-----------------------------------------------------------------------------------------
 
 R2_true_model_plot <- sims_all %>%
-  select(SimulationScenario, 
+  select(Simulation_Scenario, 
+         Model,
          R2_SampCalc,
-         R2_mle:R2_ridge) %>%
-  pivot_longer(cols = c(R2_mle:R2_ridge), 
-               names_to = "metric_model", 
-               values_to = "value") %>%
-  extract(metric_model, into = c("PerformanceMetric", "Model"), "([R2]+)_([A-Za-z]+)") %>%
-  select(-PerformanceMetric) %>%
-  mutate(SimulationScenario = factor(paste("Simulation Scenario \n", SimulationScenario, sep = " "),
-                                     levels = paste("Simulation Scenario \n", 1:max(sims_all$SimulationScenario), 
+         R2) %>%
+  mutate(SimulationScenario = factor(paste("Simulation Scenario \n", Simulation_Scenario, sep = " "),
+                                     levels = paste("Simulation Scenario \n", 1:max(sims_all$Simulation_Scenario), 
                                                     sep = " "))) %>%
-  filter(Model == "uniform") %>%
-  ggplot(aes(x = value, y = R2_SampCalc)) +
+  filter(Model == "MLE") %>%
+  ggplot(aes(x = R2, y = R2_SampCalc)) +
   facet_wrap(~SimulationScenario,
              ncol = 4, nrow = 4, as.table = TRUE) +
   geom_point() +
@@ -137,35 +127,26 @@ R2_true_model_plot <- sims_all %>%
 ####-----------------------------------------------------------------------------------------
 
 Box_violin_CITL_plot <- sims_all %>%
-  select(SimulationScenario,
+  select(Simulation_Scenario,
+         Model,
          P, RhoX, Y_prev, R2_based_on_maxR2, Beta,
-         starts_with("CITL_")) %>% 
-  pivot_longer(cols = c(starts_with("CITL_")), 
-               names_to = "metric_model", 
-               values_to = "value") %>%
-  extract(metric_model, into = c("PerformanceMetric", "Model"), "([A-Za-z]+)_([A-Za-z]+)") %>%
-  mutate(Model = fct_relevel(fct_recode(Model
-                                        , "MLE" = "mle"
-                                        , "Uniform closed-form" = "uniform"
-                                        , "Uniform bootstrap" = "bootstrap"
-                                        , "Firths" = "Firths"
-                                        , "LASSO" = "lasso"
-                                        , "Ridge" = "ridge"
-                                        ),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
-                             "LASSO", "Ridge"),
-         
-         SimulationScenario = factor(paste("Simulation Scenario", SimulationScenario, sep = " "),
-                                     levels = paste("Simulation Scenario", 1:max(sims_all$SimulationScenario), 
+         CITL) %>% 
+  mutate(Diff = (CITL - 0)^2,
+         SimulationScenario = factor(paste("Simulation Scenario", Simulation_Scenario, sep = " "),
+                                     levels = paste("Simulation Scenario", 1:max(sims_all$Simulation_Scenario), 
                                                     sep = " "))) %>%
+  group_by(Model, Simulation_Scenario) %>%
+  mutate(RMSD = format( round(sqrt(mean(Diff)),2) , nsmall = 2)) %>%
+  ungroup() %>%
   filter(Y_prev == 0.2,
          RhoX == 0) %>% #focus on a subset of simulation scenarios (similar results for P(y=1)=50% and rho=0.5)
-  ggplot(aes(x = Model, y = value, fill = Model)) +
+  ggplot(aes(x = Model, y = CITL, fill = Model)) +
   facet_wrap(~SimulationScenario, scales = "fixed", 
              ncol = 2, as.table = TRUE) +
   geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
+  geom_text(aes(y = min(sims_all$CITL), label=RMSD), color = "black", fontface = 2, size = 3) +
   geom_boxplot(notch = FALSE) + 
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.2) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   ylab("Calibration-in-the-large")
@@ -173,34 +154,26 @@ Box_violin_CITL_plot <- sims_all %>%
 
 
 Box_violin_CalSlope_plot <- sims_all %>%
-  select(SimulationScenario,
+  select(Simulation_Scenario,
+         Model,
          P, RhoX, Y_prev, R2_based_on_maxR2, Beta,
-         starts_with("CalSlope_")) %>% 
-  pivot_longer(cols = c(starts_with("CalSlope_")), 
-               names_to = "metric_model", 
-               values_to = "value") %>%
-  extract(metric_model, into = c("PerformanceMetric", "Model"), "([A-Za-z]+)_([A-Za-z]+)") %>%
-  mutate(Model = fct_relevel(fct_recode(Model,
-                                        "MLE" = "mle",
-                                        "Uniform closed-form" = "uniform",
-                                        "Uniform bootstrap" = "bootstrap",
-                                        "Firths" = "Firths",
-                                        "LASSO" = "lasso",
-                                        "Ridge" = "ridge"),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
-                             "LASSO", "Ridge"),
-         
-         SimulationScenario = factor(paste("Simulation Scenario", SimulationScenario, sep = " "),
-                                     levels = paste("Simulation Scenario", 1:max(sims_all$SimulationScenario), 
+         CalSlope) %>% 
+  mutate(Diff = (CalSlope - 1)^2,
+         SimulationScenario = factor(paste("Simulation Scenario", Simulation_Scenario, sep = " "),
+                                     levels = paste("Simulation Scenario", 1:max(sims_all$Simulation_Scenario), 
                                                     sep = " "))) %>%
+  group_by(Model, Simulation_Scenario) %>%
+  mutate(RMSD = format( round(sqrt(mean(Diff)),2) , nsmall = 2)) %>%
+  ungroup() %>%
   filter(Y_prev == 0.2,
          RhoX == 0) %>% #focus on a subset of simulation scenarios (similar results for P(y=1)=50% and rho=0.5)
-  ggplot(aes(x = Model, y = value, fill = Model)) +
+  ggplot(aes(x = Model, y = CalSlope, fill = Model)) +
   facet_wrap(~SimulationScenario, scales = "fixed", 
              ncol = 2, as.table = TRUE) +
   geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
+  geom_text(aes(y = min(sims_all$CalSlope), label=RMSD), color = "black", fontface = 2, size = 3) +
   geom_boxplot(notch = FALSE) + 
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.2) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   ylab("Calibration Slope")
@@ -208,34 +181,21 @@ Box_violin_CalSlope_plot <- sims_all %>%
 
 
 Box_violin_AUC_plot <- sims_all %>%
-  select(SimulationScenario,
+  select(Simulation_Scenario,
+         Model,
          P, RhoX, Y_prev, R2_based_on_maxR2, Beta,
-         starts_with("AUC_")) %>% 
-  pivot_longer(cols = c(starts_with("AUC_")), 
-               names_to = "metric_model", 
-               values_to = "value") %>%
-  extract(metric_model, into = c("PerformanceMetric", "Model"), "([A-Za-z]+)_([A-Za-z]+)") %>%
-  mutate(Model = fct_relevel(fct_recode(Model,
-                                        "MLE" = "mle",
-                                        "Uniform closed-form" = "uniform",
-                                        "Uniform bootstrap" = "bootstrap",
-                                        "Firths" = "Firths",
-                                        "LASSO" = "lasso",
-                                        "Ridge" = "ridge"),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
-                             "LASSO", "Ridge"),
-         
-         SimulationScenario = factor(paste("Simulation Scenario", SimulationScenario, sep = " "),
-                                     levels = paste("Simulation Scenario", 1:max(sims_all$SimulationScenario), 
+         AUC) %>% 
+  mutate(SimulationScenario = factor(paste("Simulation Scenario", Simulation_Scenario, sep = " "),
+                                     levels = paste("Simulation Scenario", 1:max(sims_all$Simulation_Scenario), 
                                                     sep = " "))) %>%
   filter(Y_prev == 0.2,
          RhoX == 0) %>% #focus on a subset of simulation scenarios (similar results for P(y=1)=50% and rho=0.5)
-  ggplot(aes(x = Model, y = value, fill = Model)) +
+  ggplot(aes(x = Model, y = AUC, fill = Model)) +
   facet_wrap(~SimulationScenario, scales = "fixed", 
              ncol = 2, as.table = TRUE) +
   geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
   geom_boxplot(notch = FALSE) + 
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.2) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   ylab("AUC")
@@ -243,34 +203,21 @@ Box_violin_AUC_plot <- sims_all %>%
 
 
 Box_violin_R2_plot <- sims_all %>%
-  select(SimulationScenario,
+  select(Simulation_Scenario,
+         Model,
          P, RhoX, Y_prev, R2_based_on_maxR2, Beta,
-         R2_mle:R2_ridge) %>% 
-  pivot_longer(cols = c(R2_mle:R2_ridge), 
-               names_to = "metric_model", 
-               values_to = "value") %>%
-  extract(metric_model, into = c("PerformanceMetric", "Model"), "([R2]+)_([A-Za-z]+)") %>%
-  mutate(Model = fct_relevel(fct_recode(Model,
-                                        "MLE" = "mle",
-                                        "Uniform closed-form" = "uniform",
-                                        "Uniform bootstrap" = "bootstrap",
-                                        "Firths" = "Firths",
-                                        "LASSO" = "lasso",
-                                        "Ridge" = "ridge"),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
-                             "LASSO", "Ridge"),
-         
-         SimulationScenario = factor(paste("Simulation Scenario", SimulationScenario, sep = " "),
-                                     levels = paste("Simulation Scenario", 1:max(sims_all$SimulationScenario), 
+         R2) %>% 
+  mutate(SimulationScenario = factor(paste("Simulation Scenario", Simulation_Scenario, sep = " "),
+                                     levels = paste("Simulation Scenario", 1:max(sims_all$Simulation_Scenario), 
                                                     sep = " "))) %>%
   filter(Y_prev == 0.2,
          RhoX == 0) %>% #focus on a subset of simulation scenarios (similar results for P(y=1)=50% and rho=0.5)
-  ggplot(aes(x = Model, y = value, fill = Model)) +
+  ggplot(aes(x = Model, y = R2, fill = Model)) +
   facet_wrap(~SimulationScenario, scales = "fixed", 
              ncol = 2, as.table = TRUE) +
   geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
   geom_boxplot(notch = FALSE) + 
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.2) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   ylab("Cox-Snell R2")
@@ -281,7 +228,7 @@ Box_violin_R2_plot <- sims_all %>%
 ####-----------------------------------------------------------------------------------------
 
 Box_violin_SF_plot <- sims_all %>%
-  select(SimulationScenario, 
+  select(Simulation_Scenario, 
          P, RhoX, Y_prev, R2_based_on_maxR2, Beta,
          starts_with("SF_")) %>% 
   pivot_longer(cols = c(starts_with("SF_")), 
@@ -296,14 +243,13 @@ Box_violin_SF_plot <- sims_all %>%
                                         "Ridge" = "ridge"),
                              "Uniform closed-form", "Uniform bootstrap", 
                              "LASSO", "Ridge"),
-         SimulationScenario = factor(SimulationScenario,
-                                     levels = paste(1:max(sims_all$SimulationScenario)))) %>%
+         SimulationScenario = factor(Simulation_Scenario,
+                                     levels = paste(1:max(sims_all$Simulation_Scenario)))) %>%
   #filter(Y_prev == 0.2) %>% #focus on a subset of simulation scenarios (similar results for P(y=1)=50% and rho=0.5)
   ggplot(aes(x = SimulationScenario, y = value, group = )) +
   facet_grid(Model~., scales = "free_y") +
   geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
   geom_boxplot(notch = FALSE) + 
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none") +
   xlab("Simulation Scenario") +
