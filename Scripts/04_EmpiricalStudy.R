@@ -70,56 +70,17 @@ mimic_data <- mimic_data %>%
 
 
 
-#####---------------------------------------------------------------------------------------
-### Create a "rate of change" for each lab variable (i.e. diff between day min and max)
-#####---------------------------------------------------------------------------------------
-
-rate_of_change_data <- mimic_data %>%
-  select(subject_id, hadm_id, icustay_id,
-         ends_with("_min"),
-         ends_with("_max")) %>%
-  #Turn into long format:
-  pivot_longer(cols = c(-subject_id, -hadm_id, -icustay_id), 
-               names_to = "labtest_quantity", 
-               values_to = "value") %>%
-  #Separate the labtest_quantity variable into separate columns based on regex.:
-  extract(labtest_quantity, 
-          into = c("Labtest", "Quantity"), 
-          "([A-Za-z]+)_([A-Za-z]+)") %>%
-  #Place the max and min values 'next to' each other for each person:
-  pivot_wider(id_cols = c("subject_id", "hadm_id", "icustay_id", "Labtest"),
-              names_from = "Quantity",
-              values_from = "value") %>%
-  #Calculate the difference between the min and max of each lab test for each person:
-  mutate("change" = max - min) %>%
-  select(-min, -max) %>%
-  #Place the different lab tests for each person back in side-by-side (wide) format:
-  pivot_wider(id_cols = c("subject_id", "hadm_id", "icustay_id"),
-              names_from = "Labtest",
-              values_from = "change") %>%
-  #Add a "_change" suffix to all lab test names (similar format to the mimic_cohort tibble):
-  rename_at(.vars = vars(-subject_id, -hadm_id, -icustay_id),
-            .funs = ~paste0(., "_change"))
-
-
-
 ####----------------------------------------------------------------------------------------
-## Subset the variables and rows that we wish to use for modelling, and 
-#    add-in the change in lab tests
+## Subset the variables and rows that we wish to use for modelling
 ####----------------------------------------------------------------------------------------
 
 Analysis_Cohort <- mimic_data %>%
-  select(-ends_with("_min"),
-         -ends_with("_max")) %>%
-  left_join(rate_of_change_data,
-            by = c("subject_id", "hadm_id", "icustay_id")) %>%
   select(subject_id, hadm_id, icustay_id,
          age_grouped,
          gender,
          admission_type,
          ethnicity_grouped,
          ends_with("_mean"),
-         ends_with("_change"),
          hospital_expire_flag) %>%
   # Consider complete case analysis on the mimic iii cohort, for simplicity of
   #   modelling and bootstrap:
@@ -141,8 +102,7 @@ P <- ncol(model.matrix(hospital_expire_flag ~ .,
                                 gender,
                                 admission_type,
                                 ethnicity_grouped,
-                                ends_with("_mean"),
-                                ends_with("_change"))))
+                                ends_with("_mean"))))
 
 
 MIMIC_Sample_Size_Calc_Table <- as.data.frame(pmsampsize(type = "b",
@@ -186,8 +146,7 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                   gender,
                                   admission_type,
                                   ethnicity_grouped,
-                                  ends_with("_mean"),
-                                  ends_with("_change")))
+                                  ends_with("_mean")))
   Val_DM <- model.matrix(hospital_expire_flag ~ .,
                          data = Data_for_Predictions %>%
                            select(hospital_expire_flag,
@@ -195,8 +154,7 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                   gender,
                                   admission_type,
                                   ethnicity_grouped,
-                                  ends_with("_mean"),
-                                  ends_with("_change")))
+                                  ends_with("_mean")))
   
   P <- ncol(Dev_DM) - 1 #number of predictor terms (minus 1 for intercept)
   
@@ -209,8 +167,7 @@ modelling_fnc <- function(Data_for_Model_Fit,
                           gender,
                           admission_type,
                           ethnicity_grouped,
-                          ends_with("_mean"),
-                          ends_with("_change")),
+                          ends_with("_mean")),
                  family = binomial(link = "logit"))
   MLE_pi_insampl <- predict(MLE_CPM, 
                             newdata = Data_for_Model_Fit, 
@@ -258,8 +215,7 @@ modelling_fnc <- function(Data_for_Model_Fit,
                             gender,
                             admission_type,
                             ethnicity_grouped,
-                            ends_with("_mean"),
-                            ends_with("_change")),
+                            ends_with("_mean")),
                    family = binomial(link = "logit"))
     
     #Apply the bootstrap model to the original development data:
@@ -290,8 +246,7 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                  gender,
                                  admission_type,
                                  ethnicity_grouped,
-                                 ends_with("_mean"),
-                                 ends_with("_change")),
+                                 ends_with("_mean")),
                         firth = TRUE)
   #re-estimate the intercept ready for prediction:
   Firths_LP <- as.numeric((Dev_DM[,-1]) %*% (as.numeric(coef(Firths_CPM))[-1]))
@@ -479,6 +434,11 @@ subset_nested_analysis_data <- tibble("Bootstrap_Index" = 0,
               mutate("Bootstrap_Data" =  map(Original_Data,
                                              function(df) df %>% sample_n(nrow(df), replace = TRUE))))
 
+#identical(subset_nested_analysis_data$Bootstrap_Data[[20]], subset_nested_analysis_data$Bootstrap_Data[[12]]) #=FALSE
+#identical(subset_nested_analysis_data$Bootstrap_Data[[33]], subset_nested_analysis_data$Bootstrap_Data[[75]]) #=FALSE
+#identical(subset_nested_analysis_data$Original_Data[[44]], subset_nested_analysis_data$Bootstrap_Data[[44]]) #=FALSE
+#identical(subset_nested_analysis_data$Original_Data[[1]], subset_nested_analysis_data$Bootstrap_Data[[1]]) #=TRUE, as expected
+
 ##Apply the modelling functions to each bootstrap dataset (runs in parallel):
 plan(multiprocess, workers = (availableCores() - 1))
 
@@ -564,7 +524,7 @@ Bootstrap_InternalValidation <- summary_mimic_results %>%
   #optimism estimate across bootstraps:
   mutate(AdjustedPerformance = ApparentPerformance - optimism)
 
-##Normally one just looks at the mean performance (with 95% CI of this mean) across
+##Examine the mean performance (with 95% CI of this mean) across
 #the bootstrap internal validation (i.e. average performance):
 Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>%
   mutate(Model = fct_relevel(fct_recode(Model,
@@ -581,11 +541,11 @@ Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>%
   mutate("Lower" = Mean - (1.96*sd),
          "Upper" = Mean + (1.96*sd),
          #Present mean and 95% CI ready for table output:
-         "Value" = paste(round(Mean, 3),
+         "Value" = paste(round(Mean, 2),
                          " (",
-                         round(Lower, 3),
+                         round(Lower, 2),
                          ", ",
-                         round(Upper, 3),
+                         round(Upper, 2),
                          ")", sep = "")) %>%
   select(Study, Model, Metric, Value) %>%
   pivot_wider(id_cols = c("Study", "Model"),
