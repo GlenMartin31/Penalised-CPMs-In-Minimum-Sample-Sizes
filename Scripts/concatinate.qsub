@@ -1,0 +1,8 @@
+#!/bin/bash --login
+#$ -S bin/bash
+#$ -cwd
+#$ -V
+
+module load apps/gcc/R/4.0.2
+
+Rscript concatinate_results.R

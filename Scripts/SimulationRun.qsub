@@ -1,0 +1,10 @@
+#!/bin/bash --login
+#$ -S bin/bash
+#$ -cwd
+#$ -V
+
+module load apps/gcc/R/4.0.2
+
+#$ -t 1-16
+
+Rscript 01_SimulationRun.R $SGE_TASK_ID > simulation_warnings.$SGE_TASK_ID
