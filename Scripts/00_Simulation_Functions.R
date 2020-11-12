@@ -258,13 +258,88 @@ simulation_singlerun_fnc <- function(P,
     mutate("Ridge_CPM_Pi" = c(Ridge_Predictions))
   
   
+  ## Repeat Cross-fold validation LASSO and Ridge
+  Error_mat_LASSO <- NULL
+  Error_mat_Ridge <- NULL
+  for(r in 1:100) { #100 repeats of 10-fold cross validation
+    RepeatCV_LASSO_CPM <- cv.glmnet(x = DevelopmentData %>%
+                                      select(starts_with("V")) %>%
+                                      data.matrix(),
+                                    y = DevelopmentData$Y,
+                                    family = "binomial",
+                                    alpha = 1,
+                                    nfolds = 10)
+    Error_mat_LASSO <- Error_mat_LASSO %>% bind_rows(tibble("lambda" = RepeatCV_LASSO_CPM$lambda, 
+                                                            "cvm" = RepeatCV_LASSO_CPM$cvm,
+                                                            "cvm.se" = RepeatCV_LASSO_CPM$cvsd))
+    
+    RepeatCV_Ridge_CPM <- cv.glmnet(x = DevelopmentData %>%
+                                      select(starts_with("V")) %>%
+                                      data.matrix(),
+                                    y = DevelopmentData$Y,
+                                    family = "binomial",
+                                    alpha = 0,
+                                    nfolds = 10)
+    Error_mat_Ridge <- Error_mat_Ridge %>% bind_rows(tibble("lambda" = RepeatCV_Ridge_CPM$lambda, 
+                                                            "cvm" = RepeatCV_Ridge_CPM$cvm,
+                                                            "cvm.se" = RepeatCV_Ridge_CPM$cvsd))
+  }
+  Summary_Error_mat_LASSO <- Error_mat_LASSO %>%
+    group_by(lambda) %>%
+    summarise(CVM = mean(cvm),
+              se.CVM = mean(cvm.se),
+              .groups = "drop") %>%
+    arrange(desc(lambda)) %>%
+    ungroup()
+  Summary_Error_mat_Ridge <- Error_mat_Ridge %>%
+    group_by(lambda) %>%
+    summarise(CVM = mean(cvm),
+              se.CVM = mean(cvm.se),
+              .groups = "drop") %>%
+    arrange(desc(lambda)) %>%
+    ungroup()
+  RepeatCV_LASSO_S <- Summary_Error_mat_LASSO$lambda[which.min(Summary_Error_mat_LASSO$CVM)]
+  #Predict using the lambda that minimises deviance across the repeat CV runs:
+  RepeatCV_LASSO_Predictions <- predict(glmnet(x = DevelopmentData %>%
+                                                 select(starts_with("V")) %>%
+                                                 data.matrix(),
+                                               y = DevelopmentData$Y,
+                                               family = "binomial",
+                                               alpha = 1),
+                                        newx = ValidationData %>%
+                                          select(starts_with("V")) %>%
+                                          data.matrix(),
+                                        s = RepeatCV_LASSO_S,
+                                        type = "response")
+  ValidationData <- ValidationData %>%
+    mutate("RepeatCVLASSO_CPM_Pi" = c(RepeatCV_LASSO_Predictions))
+  
+  RepeatCV_Ridge_S <- Summary_Error_mat_Ridge$lambda[which.min(Summary_Error_mat_Ridge$CVM)]
+  #Predict using the lambda that minimises deviance across the repeat CV runs:
+  RepeatCV_Ridge_Predictions <- predict(glmnet(x = DevelopmentData %>%
+                                                 select(starts_with("V")) %>%
+                                                 data.matrix(),
+                                               y = DevelopmentData$Y,
+                                               family = "binomial",
+                                               alpha = 0),
+                                        newx = ValidationData %>%
+                                          select(starts_with("V")) %>%
+                                          data.matrix(),
+                                        s = RepeatCV_Ridge_S,
+                                        type = "response")
+  ValidationData <- ValidationData %>%
+    mutate("RepeatCVRidge_CPM_Pi" = c(RepeatCV_Ridge_Predictions))
+  
+  
   ### Test each model in the validation data
   PredictivePerformance <- map_dfr(list("MLE" = ValidationData$MLE_CPM_Pi
                                         , "Uniform" = ValidationData$UniformShrunk_CPM_Pi
                                         , "Bootstrap" = ValidationData$BootstrapShrunk_CPM_Pi
                                         , "Firth" = ValidationData$Firths_CPM_Pi
                                         , "LASSO" = ValidationData$LASSO_CPM_Pi
-                                        , "Ridge" = ValidationData$Ridge_CPM_Pi),
+                                        , "Ridge" = ValidationData$Ridge_CPM_Pi
+                                        , "RepeatCVLASSO" = ValidationData$RepeatCVLASSO_CPM_Pi
+                                        , "RepeatCVRidge" = ValidationData$RepeatCVRidge_CPM_Pi),
                                    Performance_fnc,
                                    Response = ValidationData$Y,
                                    .id = "Model") %>%
@@ -275,7 +350,9 @@ simulation_singlerun_fnc <- function(P,
            "SF_uniform" = uniform_shrinkage,
            "SF_bootstrap" = Bootstrap_shrinkage,
            "SF_lasso" = LASSO_CPM$lambda.min,
+           "SF_ReapeatCVlasso" = RepeatCV_LASSO_S,
            "SF_ridge" = Ridge_CPM$lambda.min,
+           "SF_ReapeatCVridge" = RepeatCV_Ridge_S,
            
            "R2_SampCalc" = R2_for_SampCalc,
            .after = "Model")
@@ -310,12 +387,15 @@ Performance_fnc <- function(PredictedRisk, Response) {
                 as.numeric(logLik(CITL_mod)))
   R2_coxsnell <- 1 - exp(-LR/length(Response))
   
+  BrierScore <- 1/length(Response) * (sum((PredictedRisk - Response)^2))
+  
   return(list("CITL" = CITL,
               "CITLSE" = CITLSE,
               "CalSlope" = CalSlope,
               "CalSlopeSE" = CalSlopeSE,
               "AUC" = as.numeric(AUC$auc),
               "AUCSE" = sqrt(var(AUC)),
-              "R2" = R2_coxsnell))
+              "R2" = R2_coxsnell,
+              "BrierScore" = BrierScore))
 }
 
