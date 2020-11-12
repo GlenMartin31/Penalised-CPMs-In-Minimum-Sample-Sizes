@@ -306,6 +306,88 @@ modelling_fnc <- function(Data_for_Model_Fit,
     mutate("Ridge_CPM_Pi" = c(Ridge_Predictions))
   
   
+  ## Repeat Cross-fold validation LASSO and Ridge
+  Error_mat_LASSO <- NULL
+  Error_mat_Ridge <- NULL
+  for(r in 1:100) { #100 repeats of 10-fold cross validation
+    RepeatCV_LASSO_CPM <- cv.glmnet(x = Dev_DM[,-1],
+                                    y = Data_for_Model_Fit$hospital_expire_flag,
+                                    family = "binomial",
+                                    alpha = 1,
+                                    nfolds = 10)
+    Error_mat_LASSO <- Error_mat_LASSO %>% bind_rows(tibble("lambda" = RepeatCV_LASSO_CPM$lambda, 
+                                                            "cvm" = RepeatCV_LASSO_CPM$cvm,
+                                                            "cvm.se" = RepeatCV_LASSO_CPM$cvsd))
+    
+    RepeatCV_Ridge_CPM <- cv.glmnet(x = Dev_DM[,-1],
+                                    y = Data_for_Model_Fit$hospital_expire_flag,
+                                    family = "binomial",
+                                    alpha = 0,
+                                    nfolds = 10)
+    Error_mat_Ridge <- Error_mat_Ridge %>% bind_rows(tibble("lambda" = RepeatCV_Ridge_CPM$lambda, 
+                                                            "cvm" = RepeatCV_Ridge_CPM$cvm,
+                                                            "cvm.se" = RepeatCV_Ridge_CPM$cvsd))
+  }
+  Summary_Error_mat_LASSO <- Error_mat_LASSO %>%
+    group_by(lambda) %>%
+    summarise(CVM = mean(cvm),
+              se.CVM = mean(cvm.se),
+              .groups = "drop") %>%
+    arrange(desc(lambda)) %>%
+    ungroup()
+  Summary_Error_mat_Ridge <- Error_mat_Ridge %>%
+    group_by(lambda) %>%
+    summarise(CVM = mean(cvm),
+              se.CVM = mean(cvm.se),
+              .groups = "drop") %>%
+    arrange(desc(lambda)) %>%
+    ungroup()
+  RepeatCV_LASSO_S <- Summary_Error_mat_LASSO$lambda[which.min(Summary_Error_mat_LASSO$CVM)]
+  #in-sample predictions:
+  RepeatCV_LASSO_Predictions <- predict(glmnet(x = Dev_DM[,-1],
+                                               y = Data_for_Model_Fit$hospital_expire_flag,
+                                               family = "binomial",
+                                               alpha = 1),
+                                        newx = Dev_DM[,-1],
+                                        s = RepeatCV_LASSO_S,
+                                        type = "response")
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate("RepeatCVLASSO_CPM_Pi" = c(RepeatCV_LASSO_Predictions))
+  #out-of-sample predictions:
+  RepeatCV_LASSO_Predictions <- predict(glmnet(x = Dev_DM[,-1],
+                                               y = Data_for_Model_Fit$hospital_expire_flag,
+                                               family = "binomial",
+                                               alpha = 1),
+                                        newx = Val_DM[,-1],
+                                        s = RepeatCV_LASSO_S,
+                                        type = "response")
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate("RepeatCVLASSO_CPM_Pi" = c(RepeatCV_LASSO_Predictions))
+  
+  RepeatCV_Ridge_S <- Summary_Error_mat_Ridge$lambda[which.min(Summary_Error_mat_Ridge$CVM)]
+  #in-sample predictions:
+  RepeatCV_Ridge_Predictions <- predict(glmnet(x = Dev_DM[,-1],
+                                               y = Data_for_Model_Fit$hospital_expire_flag,
+                                               family = "binomial",
+                                               alpha = 0),
+                                        newx = Dev_DM[,-1],
+                                        s = RepeatCV_Ridge_S,
+                                        type = "response")
+  Data_for_Model_Fit <- Data_for_Model_Fit %>%
+    mutate("RepeatCVRidge_CPM_Pi" = c(RepeatCV_Ridge_Predictions))
+  #out-of-sample predictions:
+  RepeatCV_Ridge_Predictions <- predict(glmnet(x = Dev_DM[,-1],
+                                               y = Data_for_Model_Fit$hospital_expire_flag,
+                                               family = "binomial",
+                                               alpha = 0),
+                                        newx = Val_DM[,-1],
+                                        s = RepeatCV_Ridge_S,
+                                        type = "response")
+  Data_for_Predictions <- Data_for_Predictions %>%
+    mutate("RepeatCVRidge_CPM_Pi" = c(RepeatCV_Ridge_Predictions))
+  
+  
+  
   #####-------------------------------TEST THE MODELS--------------------------------------------
   ##Internal function to test predictive performance:
   Performance_fnc <- function(PredictedRisk, Response) {
@@ -325,12 +407,15 @@ modelling_fnc <- function(Data_for_Model_Fit,
                levels = c(0,1),
                ci = TRUE)
     
+    BrierScore <- 1/length(Response) * (sum((PredictedRisk - Response)^2))
+    
     return(list("CITL" = CITL,
                 "CITL_se" = CITL_se,
                 "CalSlope" = CalSlope,
                 "CalSlope_se" = CalSlope_se,
                 "AUC" = as.numeric(AUC$auc),
-                "AUC_se" = sqrt(var(AUC))))
+                "AUC_se" = sqrt(var(AUC)),
+                "BrierScore" = BrierScore))
   }
   
   InSamplePredictivePerformance <- map(list("MLE" = Data_for_Model_Fit$MLE_CPM_Pi
@@ -339,6 +424,8 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                              , "Firth" = Data_for_Model_Fit$Firths_CPM_Pi
                                              , "LASSO" = Data_for_Model_Fit$LASSO_CPM_Pi
                                              , "Ridge" = Data_for_Model_Fit$Ridge_CPM_Pi
+                                             , "RepeatCVLASSO" = Data_for_Model_Fit$RepeatCVLASSO_CPM_Pi
+                                             , "RepeatCVRidge" = Data_for_Model_Fit$RepeatCVRidge_CPM_Pi
                                              ),
                                         Performance_fnc,
                                         Response = Data_for_Model_Fit$hospital_expire_flag) %>%
@@ -351,6 +438,8 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                              , "Firth" = Data_for_Predictions$Firths_CPM_Pi
                                              , "LASSO" = Data_for_Predictions$LASSO_CPM_Pi
                                              , "Ridge" = Data_for_Predictions$Ridge_CPM_Pi
+                                             , "RepeatCVLASSO" = Data_for_Predictions$RepeatCVLASSO_CPM_Pi
+                                             , "RepeatCVRidge" = Data_for_Predictions$RepeatCVRidge_CPM_Pi
                                              ),
                                         Performance_fnc,
                                         Response = Data_for_Predictions$hospital_expire_flag) %>%
@@ -483,9 +572,11 @@ Bootstrap_InternalValidation <- summary_mimic_results %>%
          InSample_CITL,
          InSample_CalSlope,
          InSample_AUC,
+         InSample_BrierScore,
          OutSample_CITL,
          OutSample_CalSlope,
-         OutSample_AUC) %>%
+         OutSample_AUC,
+         OutSample_BrierScore) %>%
   #pivot the bootstrap internal validation results into long format:
   pivot_longer(col = c(-Study, -Bootstrap_Index, -Model),
                names_to = "Sample_Metric") %>%
@@ -511,7 +602,8 @@ Bootstrap_InternalValidation <- summary_mimic_results %>%
                      #need only select these results since OutSample_. are identical by definition
                      InSample_CITL,
                      InSample_CalSlope,
-                     InSample_AUC) %>%
+                     InSample_AUC,
+                     InSample_BrierScore) %>%
               #pivot this into long format to match the bootstrap resutls above:
               pivot_longer(cols = c(-Study, -Model),
                            names_to = "Sample_Metric",
@@ -527,12 +619,18 @@ Bootstrap_InternalValidation <- summary_mimic_results %>%
 ##Examine the mean performance (with 95% CI of this mean) across
 #the bootstrap internal validation (i.e. average performance):
 Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>%
-  mutate(Model = fct_relevel(fct_recode(Model,
-                                        "Uniform closed-form" = "Uniform",
-                                        "Uniform bootstrap" = "Bootstrap",
-                                        "Firths" = "Firth"),
+  mutate(Model = fct_relevel(fct_recode(Model
+                                        , "MLE" = "MLE"
+                                        , "Uniform closed-form" = "Uniform"
+                                        , "Uniform bootstrap" = "Bootstrap"
+                                        , "Firths" = "Firth"
+                                        , "LASSO" = "LASSO"
+                                        , "Repeat CV LASSO" = "RepeatCVLASSO"
+                                        , "Ridge" = "Ridge"
+                                        , "Repeat CV Ridge" = "RepeatCVRidge"
+                                        ),
                              "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
-                             "LASSO", "Ridge")) %>%
+                             "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge")) %>%
   group_by(Study, Model, Metric) %>%
   summarise("Mean" = mean(AdjustedPerformance),
             "sd" = sd(AdjustedPerformance),
@@ -551,49 +649,63 @@ Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>%
   pivot_wider(id_cols = c("Study", "Model"),
               names_from = "Metric",
               values_from = "Value") %>%
-  select(Study, Model, CITL, CalSlope, AUC) %>%
+  select(Study, Model, CITL, CalSlope, AUC, BrierScore) %>%
   rename("Calibration-in-the-large" = "CITL",
          "Calibration Slope" = "CalSlope",
-         "AUC" = "AUC")
+         "AUC" = "AUC",
+         "Brier Score" = "BrierScore")
 
 #....we suggest that it is also constructive to look at the distribution of each
 #adjusted performance results across the bootstrap samples, as well as the mean:
 Box_violin_mimiciii_plot <- Bootstrap_InternalValidation %>%
-  mutate(Model = fct_relevel(fct_recode(Model,
-                                        "Uniform closed-form" = "Uniform",
-                                        "Uniform bootstrap" = "Bootstrap",
-                                        "Firths" = "Firth"),
+  mutate(Model = fct_relevel(fct_recode(Model
+                                        , "MLE" = "MLE"
+                                        , "Uniform closed-form" = "Uniform"
+                                        , "Uniform bootstrap" = "Bootstrap"
+                                        , "Firths" = "Firth"
+                                        , "LASSO" = "LASSO"
+                                        , "Repeat CV LASSO" = "RepeatCVLASSO"
+                                        , "Ridge" = "Ridge"
+                                        , "Repeat CV Ridge" = "RepeatCVRidge"
+                                        ),
                              "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
-                             "LASSO", "Ridge"),
+                             "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
 
          Metric = fct_relevel(fct_recode(Metric,
                                          "Calibration-in-the-large" = "CITL",
                                          "Calibration Slope" = "CalSlope",
-                                         "AUC" = "AUC"),
-                              "Calibration-in-the-large", "Calibration Slope", "AUC")) %>%
+                                         "AUC" = "AUC",
+                                         "Brier Score" = "BrierScore"),
+                              "Calibration-in-the-large", "Calibration Slope", "AUC", "Brier Score")) %>%
   ggplot(aes(x = Model, y = AdjustedPerformance, fill = Model)) +
   facet_wrap(~Metric + Study,
-             nrow = 3, ncol = 2, scale = "free_y") +
+             nrow = 4, ncol = 2, scale = "free_y") +
   geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
   geom_boxplot(notch = FALSE) +
   geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
   geom_blank(data = data.frame("Metric" = "Calibration-in-the-large",
                                "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
-                                           "LASSO", "Ridge"),
+                                           "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
                                "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
                                  which(Bootstrap_InternalValidation$Metric=="CITL")
                                ]))) +
   geom_blank(data = data.frame("Metric" = "Calibration Slope",
                                "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
-                                           "LASSO", "Ridge"),
+                                           "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
                                "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
                                  which(Bootstrap_InternalValidation$Metric=="CalSlope")
                                ]))) +
   geom_blank(data = data.frame("Metric" = "AUC",
                                "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
-                                           "LASSO", "Ridge"),
+                                           "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
                                "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
                                  which(Bootstrap_InternalValidation$Metric=="AUC")
+                               ]))) +
+  geom_blank(data = data.frame("Metric" = "Brier Score",
+                               "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
+                                           "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
+                               "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
+                                 which(Bootstrap_InternalValidation$Metric=="BrierScore")
                                ]))) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
