@@ -223,6 +223,28 @@ Box_violin_R2_plot <- sims_all %>%
   ylab("Cox-Snell R2")
 
 
+
+Box_violin_BrierScore_plot <- sims_all %>%
+  select(Simulation_Scenario,
+         Model,
+         P, RhoX, Y_prev, R2_based_on_maxR2, Beta,
+         BrierScore) %>% 
+  mutate(SimulationScenario = factor(paste("Simulation Scenario", Simulation_Scenario, sep = " "),
+                                     levels = paste("Simulation Scenario", 1:max(sims_all$Simulation_Scenario), 
+                                                    sep = " "))) %>%
+  filter(Y_prev == 0.2,
+         RhoX == 0) %>% #focus on a subset of simulation scenarios (similar results for P(y=1)=50% and rho=0.5)
+  ggplot(aes(x = Model, y = BrierScore, fill = Model)) +
+  facet_wrap(~SimulationScenario, scales = "fixed", 
+             ncol = 2, as.table = TRUE) +
+  geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
+  geom_boxplot(notch = FALSE) + 
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.2) +
+  theme_bw(base_size = 12) +
+  theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
+  ylab("Brier Score")
+
+
 ####-----------------------------------------------------------------------------------------
 ## Figure: distribution of shrinkage/penalisation estimates
 ####-----------------------------------------------------------------------------------------
@@ -236,13 +258,16 @@ Box_violin_SF_plot <- sims_all %>%
                values_to = "value") %>%
   extract(metric_model, into = c("PerformanceMetric", "Model"), "([A-Za-z]+)_([A-Za-z]+)") %>%
   select(-PerformanceMetric) %>%
-  mutate(Model = fct_relevel(fct_recode(Model,
-                                        "Uniform closed-form" = "uniform",
-                                        "Uniform bootstrap" = "bootstrap",
-                                        "LASSO" = "lasso",
-                                        "Ridge" = "ridge"),
+  mutate(Model = fct_relevel(fct_recode(Model
+                                        , "Uniform closed-form" = "uniform"
+                                        , "Uniform bootstrap" = "bootstrap"
+                                        , "LASSO" = "lasso"
+                                        , "Repeat CV LASSO" = "ReapeatCVlasso"
+                                        , "Ridge" = "ridge"
+                                        , "Repeat CV Ridge" = "ReapeatCVridge"
+                                        ),
                              "Uniform closed-form", "Uniform bootstrap", 
-                             "LASSO", "Ridge"),
+                             "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
          SimulationScenario = factor(Simulation_Scenario,
                                      levels = paste(1:max(sims_all$Simulation_Scenario)))) %>%
   #filter(Y_prev == 0.2) %>% #focus on a subset of simulation scenarios (similar results for P(y=1)=50% and rho=0.5)

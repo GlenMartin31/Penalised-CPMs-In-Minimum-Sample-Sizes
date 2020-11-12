@@ -31,10 +31,12 @@ sims_all <- read_rds(here::here("Data", "simulation_results_all.RDS")) %>%
                                         , "Uniform bootstrap" = "Bootstrap"
                                         , "Firths" = "Firth"
                                         , "LASSO" = "LASSO"
+                                        , "Repeat CV LASSO" = "RepeatCVLASSO"
                                         , "Ridge" = "Ridge"
-         ),
-         "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
-         "LASSO", "Ridge"))
+                                        , "Repeat CV Ridge" = "RepeatCVRidge"
+                                        ),
+                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
+                             "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"))
 
 
 
@@ -45,6 +47,7 @@ sims_all <- read_rds(here::here("Data", "simulation_results_all.RDS")) %>%
 mean_summary_sims <- sims_all %>%
   group_by(Simulation_Scenario, Model) %>%
   summarise_at(.vars = vars(R2,
+                            BrierScore,
                             starts_with("CITL"),
                             starts_with("CalSlope"),
                             starts_with("AUC")),
