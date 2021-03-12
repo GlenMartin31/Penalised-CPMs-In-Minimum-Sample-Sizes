@@ -3,8 +3,8 @@
 # Author of code: Glen P. Martin.
 
 # This is code for a empirical study presented in a manuscript entitled: 
-# Developing Clinical Prediction Models Using Data that Adheres to
-# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Developing Clinical Prediction Models: the importance of penalization methods and quantifying bootstrap 
+# variability even when adhering to minimum sample size recommendations
 # Authors:
 #   Glen P. Martin
 #   Richard Riley
@@ -273,15 +273,25 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                newx = Dev_DM[,-1],
                                s = "lambda.min",
                                type = "response")
+  LASSO_Predictions1SE <- predict(LASSO_CPM,
+                                  newx = Dev_DM[,-1],
+                                  s = "lambda.1se",
+                                  type = "response")
   Data_for_Model_Fit <- Data_for_Model_Fit %>%
-    mutate("LASSO_CPM_Pi" = c(LASSO_Predictions))
+    mutate("LASSO_CPM_Pi" = c(LASSO_Predictions),
+           "LASSO_CPM1SE_Pi" = c(LASSO_Predictions1SE))
   #out-of-sample predictions:
   LASSO_Predictions <- predict(LASSO_CPM,
                                newx = Val_DM[,-1],
                                s = "lambda.min",
                                type = "response")
+  LASSO_Predictions1SE <- predict(LASSO_CPM,
+                                  newx = Val_DM[,-1],
+                                  s = "lambda.1se",
+                                  type = "response")
   Data_for_Predictions <- Data_for_Predictions %>%
-    mutate("LASSO_CPM_Pi" = c(LASSO_Predictions))
+    mutate("LASSO_CPM_Pi" = c(LASSO_Predictions),
+           "LASSO_CPM1SE_Pi" = c(LASSO_Predictions1SE))
   
   
   ## Ridge
@@ -295,15 +305,25 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                newx = Dev_DM[,-1],
                                s = "lambda.min",
                                type = "response")
+  Ridge_Predictions1SE <- predict(Ridge_CPM,
+                                  newx = Dev_DM[,-1],
+                                  s = "lambda.1se",
+                                  type = "response")
   Data_for_Model_Fit <- Data_for_Model_Fit %>%
-    mutate("Ridge_CPM_Pi" = c(Ridge_Predictions))
+    mutate("Ridge_CPM_Pi" = c(Ridge_Predictions),
+           "Ridge_CPM1SE_Pi" = c(Ridge_Predictions1SE))
   #out-of-sample predictions:
   Ridge_Predictions <- predict(Ridge_CPM,
                                newx = Val_DM[,-1],
                                s = "lambda.min",
                                type = "response")
+  Ridge_Predictions1SE <- predict(Ridge_CPM,
+                                  newx = Val_DM[,-1],
+                                  s = "lambda.1se",
+                                  type = "response")
   Data_for_Predictions <- Data_for_Predictions %>%
-    mutate("Ridge_CPM_Pi" = c(Ridge_Predictions))
+    mutate("Ridge_CPM_Pi" = c(Ridge_Predictions),
+           "Ridge_CPM1SE_Pi" = c(Ridge_Predictions1SE))
   
   
   ## Repeat Cross-fold validation LASSO and Ridge
@@ -424,6 +444,8 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                              , "Firth" = Data_for_Model_Fit$Firths_CPM_Pi
                                              , "LASSO" = Data_for_Model_Fit$LASSO_CPM_Pi
                                              , "Ridge" = Data_for_Model_Fit$Ridge_CPM_Pi
+                                             , "LASSO1SE" = Data_for_Model_Fit$LASSO_CPM1SE_Pi
+                                             , "Ridge1SE" = Data_for_Model_Fit$Ridge_CPM1SE_Pi
                                              , "RepeatCVLASSO" = Data_for_Model_Fit$RepeatCVLASSO_CPM_Pi
                                              , "RepeatCVRidge" = Data_for_Model_Fit$RepeatCVRidge_CPM_Pi
                                              ),
@@ -438,6 +460,8 @@ modelling_fnc <- function(Data_for_Model_Fit,
                                              , "Firth" = Data_for_Predictions$Firths_CPM_Pi
                                              , "LASSO" = Data_for_Predictions$LASSO_CPM_Pi
                                              , "Ridge" = Data_for_Predictions$Ridge_CPM_Pi
+                                             , "LASSO1SE" = Data_for_Predictions$LASSO_CPM1SE_Pi
+                                             , "Ridge1SE" = Data_for_Predictions$Ridge_CPM1SE_Pi
                                              , "RepeatCVLASSO" = Data_for_Predictions$RepeatCVLASSO_CPM_Pi
                                              , "RepeatCVRidge" = Data_for_Predictions$RepeatCVRidge_CPM_Pi
                                              ),
@@ -447,10 +471,26 @@ modelling_fnc <- function(Data_for_Model_Fit,
     rename_at(.vars = vars(-Model),
               ~paste0("OutSample_", ., sep = ""))
   
+  SF <- tibble("Model" = c("MLE", "Uniform", "Bootstrap", "Firth",
+                           "LASSO", "Ridge", 
+                           "LASSO1SE", "Ridge1SE", 
+                           "RepeatCVLASSO", "RepeatCVRidge"),
+               
+               "SF" = c(NA, 
+                        uniform_shrinkage, 
+                        Bootstrap_shrinkage,
+                        NA,
+                        LASSO_CPM$lambda.min,
+                        Ridge_CPM$lambda.min,
+                        LASSO_CPM$lambda.1se,
+                        Ridge_CPM$lambda.1se,
+                        RepeatCV_LASSO_S,
+                        RepeatCV_Ridge_S))
   
   #Save the performance results in a tibble:
   outputs <- InSamplePredictivePerformance %>%
-    left_join(OutSamplePredictivePerformance, by = "Model")
+    left_join(OutSamplePredictivePerformance, by = "Model") %>%
+    left_join(SF, by = "Model")
   
   
   #####-------------------------------RETURN PREDICTED PERFORMANCE-------------------------------
@@ -562,6 +602,78 @@ summary_mimic_results <- nested_analysis_data %>%
               unnest(cols = c(Results)) %>%
               mutate("Study" = "Subset", .before = "Bootstrap_Index"))
 
+### Show the distribution in penalisation/ SF estimates across bootstrap samples
+SF_Data <- summary_mimic_results %>%
+  select(Study,
+         Bootstrap_Index,
+         Model,
+         SF) %>% 
+  filter(Bootstrap_Index != 0) %>%
+  filter(Model != "MLE",
+         Model != "Firth") %>%
+  mutate(Model = fct_relevel(fct_recode(Model
+                                        , "Uniform closed-form" = "Uniform"
+                                        , "Uniform bootstrap" = "Bootstrap"
+                                        , "LASSO" = "LASSO"
+                                        , "LASSO (1SE)" = "LASSO1SE"
+                                        , "Repeat \n CV LASSO" = "RepeatCVLASSO"
+                                        , "Ridge" = "Ridge"
+                                        , "Ridge (1SE)" = "Ridge1SE"
+                                        , "Repeat \n CV Ridge" = "RepeatCVRidge"
+                                        ),
+                             "Uniform closed-form", "Uniform bootstrap",
+                             "LASSO", "LASSO (1SE)", "Repeat \n CV LASSO", 
+                             "Ridge", "Ridge (1SE)", "Repeat \n CV Ridge"))
+MIMIC_sf_PLOT <- cowplot::plot_grid(
+  SF_Data %>%
+    filter(Model == "Uniform closed-form" |
+             Model == "Uniform bootstrap") %>%
+    ggplot(aes(x = Model, y = SF, color = Model)) +
+    facet_grid(~Study, scales = "fixed", labeller = label_wrap_gen(width = 10, multi_line = TRUE)) +
+    geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.1) +
+    geom_boxplot(notch = FALSE, outlier.shape = NA) + 
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none") +
+    xlab("Model") +
+    ylab("Shrinkage")
+  
+  ,
+  
+  SF_Data %>%
+    filter(Model == "LASSO" |
+             Model == "LASSO (1SE)" |
+             Model == "Repeat \n CV LASSO") %>%
+    ggplot(aes(x = Model, y = SF, color = Model)) +
+    facet_grid(~Study, scales = "fixed", labeller = label_wrap_gen(width = 10, multi_line = TRUE)) +
+    geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.1) +
+    geom_boxplot(notch = FALSE, outlier.shape = NA) + 
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none") +
+    xlab("Model") +
+    ylab("Penalty \n parameter")
+  
+  ,
+  
+  SF_Data %>%
+    filter(Model == "Ridge" |
+             Model == "Ridge (1SE)" |
+             Model == "Repeat \n CV Ridge") %>%
+    ggplot(aes(x = Model, y = SF, color = Model)) +
+    facet_grid(~Study, scales = "fixed", labeller = label_wrap_gen(width = 10, multi_line = TRUE)) +
+    geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.1) +
+    geom_boxplot(notch = FALSE, outlier.shape = NA) + 
+    theme_bw(base_size = 12) +
+    theme(legend.position = "none") +
+    xlab("Model") +
+    ylab("Penalty \n parameter")
+  
+  , align = c("hv")
+  , nrow = 3
+  , labels = c("A", "B", "C")
+)
+
+
+
 
 ##First manipulate the data in a format we can work with:
 Bootstrap_InternalValidation <- summary_mimic_results %>%
@@ -629,7 +741,7 @@ Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>%
                                         , "Ridge" = "Ridge"
                                         , "Repeat CV Ridge" = "RepeatCVRidge"
                                         ),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
+                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
                              "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge")) %>%
   group_by(Study, Model, Metric) %>%
   summarise("Mean" = mean(AdjustedPerformance),
@@ -668,7 +780,7 @@ Box_violin_mimiciii_plot <- Bootstrap_InternalValidation %>%
                                         , "Ridge" = "Ridge"
                                         , "Repeat CV Ridge" = "RepeatCVRidge"
                                         ),
-                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
+                             "MLE", "Uniform closed-form", "Uniform bootstrap", "Firths", 
                              "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
 
          Metric = fct_relevel(fct_recode(Metric,
@@ -677,12 +789,13 @@ Box_violin_mimiciii_plot <- Bootstrap_InternalValidation %>%
                                          "AUC" = "AUC",
                                          "Brier Score" = "BrierScore"),
                               "Calibration-in-the-large", "Calibration Slope", "AUC", "Brier Score")) %>%
+  filter(Metric != "Brier Score") %>%
   ggplot(aes(x = Model, y = AdjustedPerformance, fill = Model)) +
   facet_wrap(~Metric + Study,
              nrow = 4, ncol = 2, scale = "free_y") +
-  geom_violin(alpha = 0.25, position = position_dodge(width = .75), size = 1, color = "black") +
-  geom_boxplot(notch = FALSE) +
-  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.5) +
+  geom_violin(alpha = 0.5, position = position_dodge(width = .75), size = 1, color = "black") +
+  geom_boxplot(notch = FALSE, outlier.shape = NA) +
+  geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.1) +
   geom_blank(data = data.frame("Metric" = "Calibration-in-the-large",
                                "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
                                            "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
@@ -701,12 +814,12 @@ Box_violin_mimiciii_plot <- Bootstrap_InternalValidation %>%
                                "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
                                  which(Bootstrap_InternalValidation$Metric=="AUC")
                                ]))) +
-  geom_blank(data = data.frame("Metric" = "Brier Score",
-                               "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
-                                           "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
-                               "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
-                                 which(Bootstrap_InternalValidation$Metric=="BrierScore")
-                               ]))) +
+  # geom_blank(data = data.frame("Metric" = "Brier Score",
+  #                              "Model" = c("MLE", "Uniform closed-form", "Uniform bootstrap", "Firths",
+  #                                          "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge"),
+  #                              "AdjustedPerformance" = range(Bootstrap_InternalValidation$AdjustedPerformance[
+  #                                which(Bootstrap_InternalValidation$Metric=="BrierScore")
+  #                              ]))) +
   theme_bw(base_size = 12) +
   theme(legend.position = "none", axis.text.x = element_text(angle = 45, hjust = 1)) +
   ylab("Bootstrap Adjusted Performance") +
@@ -716,6 +829,7 @@ Box_violin_mimiciii_plot <- Bootstrap_InternalValidation %>%
 ## Save the results for entry into the paper:
 mimic_tables_figures <- list("MIMIC_Sample_Size_Calc_Table" = MIMIC_Sample_Size_Calc_Table,
                              "Tables_mimiciii_mean_summary" = Tables_mimiciii_mean_summary,
+                             "MIMIC_sf_PLOT" = MIMIC_sf_PLOT,
                              "Box_violin_mimiciii_plot" = Box_violin_mimiciii_plot)
 
 write_rds(mimic_tables_figures, path = here::here("Data", "mimic_tables_figures.RDS"))
