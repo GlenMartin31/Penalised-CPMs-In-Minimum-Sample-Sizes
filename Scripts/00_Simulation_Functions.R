@@ -3,8 +3,8 @@
 # Author of code: Glen P. Martin.
 
 # This is code for a simulation study presented in a manuscript entitled: 
-# Developing Clinical Prediction Models Using Data that Adheres to
-# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Developing Clinical Prediction Models: the importance of penalization methods and quantifying bootstrap 
+# variability even when adhering to minimum sample size recommendations
 # Authors:
 #   Glen P. Martin
 #   Richard Riley
