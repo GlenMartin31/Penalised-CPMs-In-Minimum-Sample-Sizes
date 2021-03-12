@@ -3,8 +3,8 @@
 # Author of code: Glen P. Martin.
 
 # This is code for a simulation study presented in a manuscript entitled: 
-# Developing Clinical Prediction Models Using Data that Adheres to
-# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Developing Clinical Prediction Models: the importance of penalization methods and quantifying bootstrap 
+# variability even when adhering to minimum sample size recommendations
 # Authors:
 #   Glen P. Martin
 #   Richard Riley
@@ -51,8 +51,9 @@ mean_summary_sims <- sims_all %>%
                             starts_with("CITL"),
                             starts_with("CalSlope"),
                             starts_with("AUC")),
-               .funs = list("mean" = mean,
-                            "BetweenSD" = sd)) %>%
+               .funs = list("median" = ~median(.x),
+                            "LQ" = ~quantile(.x, probs = c(0.025)),
+                            "UQ" = ~quantile(.x, probs = c(0.975)))) %>%
   ungroup() %>%
   #Turn into long format:
   pivot_longer(cols = c(-Simulation_Scenario, -Model), 
