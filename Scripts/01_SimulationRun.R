@@ -3,8 +3,8 @@
 # Author of code: Glen P. Martin.
 
 # This is code for a simulation study presented in a manuscript entitled: 
-# Developing Clinical Prediction Models Using Data that Adheres to
-# Minimum Sample Size Criteria: the importance of penalization methods and quantifying bootstrap variability
+# Developing Clinical Prediction Models: the importance of penalization methods and quantifying bootstrap 
+# variability even when adhering to minimum sample size recommendations
 # Authors:
 #   Glen P. Martin
 #   Richard Riley
@@ -26,8 +26,8 @@ library(tidyverse)
 sims_parameters <- crossing(
   P = 10,
   RhoX = c(0, 0.5),
-  Y_prev = c(0.2, 0.5),
   R2_based_on_maxR2 = c(TRUE, FALSE),
+  Y_prev = c(0.2, 0.5),
   betas = list(c(rep(log(1.10), 6), rep(log(1.5), 2), rep(log(2), 2)),
                c(rep(log(1.10), 3), log(1.5), log(2), rep(0, 5)))
 )
