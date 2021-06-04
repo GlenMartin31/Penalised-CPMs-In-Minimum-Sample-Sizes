@@ -145,7 +145,7 @@ Box_violin_CITL_plot <- sims_all %>%
   facet_wrap(~SimulationScenario, scales = "fixed", 
              ncol = 2, as.table = TRUE) +
   geom_violin(alpha = 0.5, position = position_dodge(width = .75), size = 1, color = "black") +
-  geom_text(aes(y = min(sims_all$CITL), label=RMSD), color = "black", fontface = 2, size = 3) +
+  geom_text(aes(y = max(sims_all$CITL), label=RMSD), color = "black", fontface = 2, size = 3) +
   geom_boxplot(notch = FALSE) + 
   geom_jitter(shape = 16, position = position_jitter(0.2), alpha = 0.1) +
   theme_bw(base_size = 12) +
@@ -171,7 +171,7 @@ Box_violin_CalSlope_plot <- sims_all %>%
   facet_wrap(~SimulationScenario, scales = "fixed", 
              ncol = 2, as.table = TRUE) +
   geom_violin(alpha = 0.5, position = position_dodge(width = .75), size = 1, color = "black") +
-  geom_text(aes(y = min(sims_all$CalSlope), label=RMSD), color = "black", fontface = 2, size = 3) +
+  geom_text(aes(y = max(sims_all$CalSlope), label=RMSD), color = "black", fontface = 2, size = 3) +
   geom_boxplot(notch = FALSE, outlier.shape = NA) + 
   geom_jitter(shape = 16, position = position_jitter(0.4), alpha = 0.1, aes(colour = Model)) +
   theme_bw(base_size = 12) +
