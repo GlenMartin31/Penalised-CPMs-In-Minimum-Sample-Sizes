@@ -745,12 +745,11 @@ Tables_mimiciii_mean_summary <- Bootstrap_InternalValidation %>%
                              "LASSO", "Repeat CV LASSO", "Ridge", "Repeat CV Ridge")) %>%
   group_by(Study, Model, Metric) %>%
   summarise("Mean" = mean(AdjustedPerformance),
-            "sd" = sd(AdjustedPerformance),
+            "Lower" = quantile(AdjustedPerformance, probs = 0.025),
+            "Upper" = quantile(AdjustedPerformance, probs = 0.975),
             .groups = "drop") %>%
   ungroup() %>%
-  mutate("Lower" = Mean - (1.96*sd),
-         "Upper" = Mean + (1.96*sd),
-         #Present mean and 95% CI ready for table output:
+  mutate(#Present mean and 95% CI ready for table output:
          "Value" = paste(round(Mean, 2),
                          " (",
                          round(Lower, 2),
@@ -832,4 +831,4 @@ mimic_tables_figures <- list("MIMIC_Sample_Size_Calc_Table" = MIMIC_Sample_Size_
                              "MIMIC_sf_PLOT" = MIMIC_sf_PLOT,
                              "Box_violin_mimiciii_plot" = Box_violin_mimiciii_plot)
 
-write_rds(mimic_tables_figures, path = here::here("Data", "mimic_tables_figures.RDS"))
+write_rds(mimic_tables_figures, file = here::here("Data", "mimic_tables_figures.RDS"))
